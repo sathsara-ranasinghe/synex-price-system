@@ -466,7 +466,7 @@ ENTITIES += [
         F("TransferToAccountRef", "To account", "ref", ref="account", required=True, list=True),
         F("ClassRef", "Class", "ref", ref="class"), F("Amount", "Amount", "money", required=True, min=0, list=True),
         F("Memo", "Memo", "text", max=4095),
-    ), del_type="Transfer", include_lines=False, name_path="TxnNumber", amount_path="Amount"),
+    ), include_lines=False, name_path="TxnNumber", amount_path="Amount"),  # "Transfer" is not a valid TxnDelType
 
     Entity("statement_charge", "Statement charge", "Statement charges", "sales", "txn", "Charge", (
         F("CustomerRef", "Customer:Job", "ref", ref="customer", required=True, list=True),
