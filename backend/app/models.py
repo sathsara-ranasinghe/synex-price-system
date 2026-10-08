@@ -64,6 +64,7 @@ class User(Base):
     totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     recovery_codes: Mapped[list | None] = mapped_column(JSON)  # bcrypt hashes of unused one-time codes
     prefs: Mapped[dict | None] = mapped_column(JSON)  # list columns, saved views, daily summary on/off
+    token_version: Mapped[int] = mapped_column(Integer, default=0)  # +1 signs the user out everywhere
 
     role: Mapped[Role] = relationship(lazy="joined")
     companies: Mapped[list[Company]] = relationship(secondary=user_companies, lazy="selectin")

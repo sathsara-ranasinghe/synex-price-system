@@ -9,6 +9,7 @@ import { MatSnackBar } from '@angular/material/snack-bar';
 import { firstValueFrom } from 'rxjs';
 import { AuthService, errorText } from '../core/auth';
 import { InsightsService } from '../core/insights.service';
+import { CompanyService } from '../core/company.service';
 
 @Component({
   selector: 'app-account',
@@ -16,7 +17,16 @@ import { InsightsService } from '../core/insights.service';
   imports: [FormsModule, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule],
   template: `
     <div class="head"><div><h1>Account &amp; security</h1>
-      <div class="sub">{{ auth.me()?.full_name || auth.me()?.username }} · {{ auth.me()?.email }}</div></div></div>
+      <div class="sub">{{ auth.me()?.full_name || auth.me()?.username }} · {{ auth.me()?.email }}</div></div>
+      <span class="spacer"></span>
+      <button mat-stroked-button (click)="signOutEverywhere()" [disabled]="busy()"><mat-icon>devices</mat-icon> Sign out on all other devices</button>
+    </div>
+    @if (auth.me()?.must_setup_2fa) {
+      <div class="must"><mat-icon>shield</mat-icon>
+        <div><strong>Set up two-step verification to continue.</strong>
+          Your role can approve or write changes to QuickBooks, so your account must be protected with Google Authenticator.
+          The rest of the portal opens as soon as it is on.</div></div>
+    }
 
     <div class="grid">
       <!-- two-factor -->
@@ -95,10 +105,10 @@ import { InsightsService } from '../core/insights.service';
         <div class="title"><span class="ic"><mat-icon>password</mat-icon></span><div><h2>Change password</h2></div></div>
         <div class="col">
           <mat-form-field><mat-label>Current password</mat-label><input matInput type="password" [(ngModel)]="cur" autocomplete="current-password" /></mat-form-field>
-          <mat-form-field><mat-label>New password (8+ characters)</mat-label><input matInput type="password" [(ngModel)]="next" autocomplete="new-password" /></mat-form-field>
+          <mat-form-field><mat-label>New password (10+ characters, letters and numbers)</mat-label><input matInput type="password" [(ngModel)]="next" autocomplete="new-password" /></mat-form-field>
           <mat-form-field><mat-label>Repeat new password</mat-label><input matInput type="password" [(ngModel)]="next2" autocomplete="new-password" /></mat-form-field>
           @if (next && next2 && next !== next2) { <span class="err small">The new passwords do not match.</span> }
-          <button mat-flat-button color="primary" [disabled]="!cur || next.length < 8 || next !== next2 || busy()" (click)="changePassword()">Change password</button>
+          <button mat-flat-button color="primary" [disabled]="!cur || next.length < 10 || next !== next2 || busy()" (click)="changePassword()">Change password</button>
         </div>
       </section>
     </div>
@@ -123,6 +133,9 @@ import { InsightsService } from '../core/insights.service';
     .codes button { margin-right: 8px; }
     .off { margin-top: 12px; } .off summary { cursor: pointer; color: var(--muted); font-size: 13.5px; }
     .small { font-size: 12.5px; } .err { color: var(--danger); }
+    .must { display: flex; gap: 12px; align-items: flex-start; padding: 14px 16px; margin-bottom: 16px; border-radius: 12px;
+      background: var(--warn-soft); color: var(--text); border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); }
+    .must mat-icon { color: var(--warn); }
     .digest { white-space: pre-wrap; font: 12.5px/1.5 ui-monospace, Consolas, monospace; background: var(--surface-2);
       border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin: 12px 0 0; max-height: 360px; overflow: auto; }
   `],
@@ -132,6 +145,7 @@ export class AccountComponent {
   private http = inject(HttpClient);
   private snack = inject(MatSnackBar);
   private insights = inject(InsightsService);
+  private companies = inject(CompanyService);
   daily = computed(() => this.insights.prefs()?.daily_summary ?? true);
   digest = signal<string | null>(null);
   setup = signal<{ secret: string; qr: string } | null>(null);
@@ -179,7 +193,11 @@ export class AccountComponent {
   async enable() {
     const r = await this.run(() => firstValueFrom(this.http.post<{ recovery_codes: string[] }>('/api/auth/2fa/enable', { code: this.code })),
       'Two-step verification is on');
-    if (r) { this.codes.set(r.recovery_codes); this.setup.set(null); this.code = ''; await this.auth.loadMe(); }
+    if (r) {
+      this.codes.set(r.recovery_codes); this.setup.set(null); this.code = '';
+      await this.auth.loadMe();
+      await this.companies.load();  // the rest of the portal is now open
+    }
   }
 
   async renew() {
@@ -193,10 +211,18 @@ export class AccountComponent {
     if (r !== undefined) { this.offPassword = this.offCode = ''; await this.auth.loadMe(); }
   }
 
+  /** Changing the password signs out every other browser; this one gets a fresh token. */
   async changePassword() {
-    const r = await this.run(() => firstValueFrom(this.http.post('/api/auth/change-password', { current_password: this.cur, new_password: this.next })),
-      'Password changed');
-    if (r !== undefined) { this.cur = this.next = this.next2 = ''; }
+    const r = await this.run(() => firstValueFrom(this.http.post<{ access_token: string }>('/api/auth/change-password',
+      { current_password: this.cur, new_password: this.next })), 'Password changed - other devices were signed out');
+    if (r) { this.auth.setToken(r.access_token); this.cur = this.next = this.next2 = ''; }
+  }
+
+  async signOutEverywhere() {
+    if (!confirm('Sign out of the portal on every other computer and phone?')) return;
+    const r = await this.run(() => firstValueFrom(this.http.post<{ access_token: string }>('/api/auth/sign-out-everywhere', {})),
+      'Signed out on all other devices');
+    if (r) this.auth.setToken(r.access_token);
   }
 
   copy(list: string[]) { navigator.clipboard?.writeText(list.join('\n')); this.snack.open('Copied', '', { duration: 1500 }); }

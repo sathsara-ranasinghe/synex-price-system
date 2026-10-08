@@ -367,8 +367,9 @@ from fastapi.responses import FileResponse  # noqa: E402
 from ..config import get_settings  # noqa: E402
 from ..models import Attachment  # noqa: E402
 
-BLOCKED_EXT = {".exe", ".bat", ".cmd", ".com", ".msi", ".ps1", ".vbs", ".js", ".jar", ".scr", ".dll", ".html", ".htm",
-               ".svg"}
+# Only ordinary office documents and pictures may be attached (an allow-list is safer than a block-list).
+ALLOWED_EXT = {".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".txt", ".csv",
+               ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods", ".rtf", ".msg", ".eml", ".zip"}
 
 
 class AttachmentOut(BaseModel):
@@ -402,7 +403,7 @@ async def upload_attachment(entity: str, record_id: int, file: UploadFile = File
     if f"{ent.module}.edit" not in (user.role.permissions or []) and f"{ent.module}.create" not in (user.role.permissions or []):
         raise HTTPException(403, f"Missing permission: {ent.module}.edit")
     name = os.path.basename(file.filename or "file")[:255]
-    if os.path.splitext(name)[1].lower() in BLOCKED_EXT:
+    if os.path.splitext(name)[1].lower() not in ALLOWED_EXT:
         raise HTTPException(422, "This file type is not allowed")
     limit = get_settings().max_attachment_mb * 1024 * 1024
     content = await file.read(limit + 1)

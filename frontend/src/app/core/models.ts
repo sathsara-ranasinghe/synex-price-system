@@ -14,6 +14,7 @@ export interface Me {
   role: string;
   permissions: string[];
   totp_enabled: boolean;
+  must_setup_2fa?: boolean;
 }
 
 export interface User {

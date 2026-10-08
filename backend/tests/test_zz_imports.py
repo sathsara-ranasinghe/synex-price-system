@@ -110,9 +110,9 @@ def test_import_rules():
     assert bad["skipped"] == 1 and "required" in bad["errors"][0]
     # a viewer cannot import
     client.post("/api/roles", headers=H, json={"role_name": "imp_viewer", "permissions": ["sales.view"]})
-    client.post("/api/users", headers=H, json={"username": "impviewer", "email": "i@x.lk", "password": "Passw0rd!",
+    client.post("/api/users", headers=H, json={"username": "impviewer", "email": "i@x.lk", "password": "Blue-Mango-73",
                                                "role_name": "imp_viewer", "company_ids": [1]})
-    hv = {"Authorization": "Bearer " + client.post("/api/auth/login", data={"username": "impviewer", "password": "Passw0rd!"}
+    hv = {"Authorization": "Bearer " + client.post("/api/auth/login", data={"username": "impviewer", "password": "Blue-Mango-73"}
                                                    ).json()["access_token"]}
     assert client.get("/api/files/template/customer", headers=hv).status_code == 403
 

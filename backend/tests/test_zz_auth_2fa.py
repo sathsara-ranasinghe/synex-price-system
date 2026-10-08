@@ -13,7 +13,7 @@ ADMIN = {"Authorization": "Bearer " + client.post("/api/auth/login", data={"user
 
 
 def create(username: str, email: str):
-    r = client.post("/api/users", headers=ADMIN, json={"username": username, "email": email, "password": "Passw0rd!",
+    r = client.post("/api/users", headers=ADMIN, json={"username": username, "email": email, "password": "Blue-Mango-73",
                                                         "role_name": "viewer", "company_ids": [1]})
     assert r.status_code == 201, r.text
     return r.json()["user_id"]
@@ -22,18 +22,18 @@ def create(username: str, email: str):
 def test_login_with_email_or_username():
     create("mailuser", "Mail.User@Synex.lk")
     for ident in ("mailuser", "mail.user@synex.lk", "MAIL.USER@SYNEX.LK"):
-        r = client.post("/api/auth/login", data={"username": ident, "password": "Passw0rd!"}).json()
+        r = client.post("/api/auth/login", data={"username": ident, "password": "Blue-Mango-73"}).json()
         assert r["access_token"] and not r["mfa_required"]
     assert client.post("/api/auth/login", data={"username": "mail.user@synex.lk", "password": "x"}).status_code == 401
     # e-mails must be unique because they sign people in
     assert client.post("/api/users", headers=ADMIN, json={"username": "other", "email": "MAIL.USER@synex.lk",
-                       "password": "Passw0rd!", "role_name": "viewer"}).status_code == 409
+                       "password": "Blue-Mango-73", "role_name": "viewer"}).status_code == 409
 
 
 def test_two_factor_full_cycle():
     uid = create("totpuser", "totp@synex.lk")
     h = {"Authorization": "Bearer " + client.post("/api/auth/login", data={"username": "totp@synex.lk",
-                                                                           "password": "Passw0rd!"}).json()["access_token"]}
+                                                                           "password": "Blue-Mango-73"}).json()["access_token"]}
     setup = client.post("/api/auth/2fa/setup", headers=h).json()
     assert setup["qr"].startswith("data:image/png;base64,") and "issuer=Synex%20QB%20Portal" in setup["otpauth_url"]
     totp = pyotp.TOTP(setup["secret"])
@@ -42,7 +42,7 @@ def test_two_factor_full_cycle():
     assert len(codes) == 8 and client.get("/api/auth/me", headers=h).json()["totp_enabled"] is True
 
     # password alone no longer signs in; the mfa token cannot call the API
-    step1 = client.post("/api/auth/login", data={"username": "totpuser", "password": "Passw0rd!"}).json()
+    step1 = client.post("/api/auth/login", data={"username": "totpuser", "password": "Blue-Mango-73"}).json()
     assert step1["mfa_required"] and step1["access_token"] is None
     assert client.get("/api/auth/me", headers={"Authorization": "Bearer " + step1["mfa_token"]}).status_code == 401
     assert client.post("/api/auth/login/verify", json={"mfa_token": step1["mfa_token"], "code": "123456"}).status_code == 401
@@ -52,7 +52,7 @@ def test_two_factor_full_cycle():
     assert client.post("/api/auth/login/verify", json={"mfa_token": ok["access_token"], "code": totp.now()}).status_code == 401
 
     # recovery codes work once
-    step1 = client.post("/api/auth/login", data={"username": "totpuser", "password": "Passw0rd!"}).json()
+    step1 = client.post("/api/auth/login", data={"username": "totpuser", "password": "Blue-Mango-73"}).json()
     assert client.post("/api/auth/login/verify", json={"mfa_token": step1["mfa_token"], "code": codes[0].lower()}).status_code == 200
     assert client.post("/api/auth/login/verify", json={"mfa_token": step1["mfa_token"], "code": codes[0]}).status_code == 401
 
@@ -66,14 +66,14 @@ def test_two_factor_full_cycle():
     # new recovery codes, then turning it off needs password + code
     assert len(client.post("/api/auth/2fa/recovery-codes", headers=h, json={"code": totp.now()}).json()["recovery_codes"]) == 8
     assert client.post("/api/auth/2fa/disable", headers=h, json={"password": "bad", "code": totp.now()}).status_code == 400
-    assert client.post("/api/auth/2fa/disable", headers=h, json={"password": "Passw0rd!", "code": totp.now()}).status_code == 204
-    assert client.post("/api/auth/login", data={"username": "totpuser", "password": "Passw0rd!"}).json()["access_token"]
+    assert client.post("/api/auth/2fa/disable", headers=h, json={"password": "Blue-Mango-73", "code": totp.now()}).status_code == 204
+    assert client.post("/api/auth/login", data={"username": "totpuser", "password": "Blue-Mango-73"}).json()["access_token"]
 
     # admin can reset a user who lost the phone
     setup = client.post("/api/auth/2fa/setup", headers=h).json()
     client.post("/api/auth/2fa/enable", headers=h, json={"code": pyotp.TOTP(setup["secret"]).now()})
     assert client.patch(f"/api/users/{uid}", headers=ADMIN, json={"reset_2fa": True}).json()["totp_enabled"] is False
-    assert client.post("/api/auth/login", data={"username": "totpuser", "password": "Passw0rd!"}).json()["access_token"]
+    assert client.post("/api/auth/login", data={"username": "totpuser", "password": "Blue-Mango-73"}).json()["access_token"]
 
 
 def test_secret_is_encrypted_at_rest():
@@ -81,7 +81,7 @@ def test_secret_is_encrypted_at_rest():
     from app.models import User
     create("encuser", "enc@synex.lk")
     h = {"Authorization": "Bearer " + client.post("/api/auth/login", data={"username": "encuser",
-                                                                           "password": "Passw0rd!"}).json()["access_token"]}
+                                                                           "password": "Blue-Mango-73"}).json()["access_token"]}
     secret = client.post("/api/auth/2fa/setup", headers=h).json()["secret"]
     with SessionLocal() as db:
         stored = db.query(User).filter_by(username="encuser").one().totp_secret

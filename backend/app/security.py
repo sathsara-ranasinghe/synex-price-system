@@ -26,8 +26,9 @@ def _token(claims: dict, minutes: int) -> str:
     return jwt.encode(claims, s.jwt_secret, algorithm=s.jwt_algorithm)
 
 
-def create_access_token(subject: str, role: str) -> str:
-    return _token({"sub": subject, "role": role, "typ": "access"}, get_settings().jwt_expire_minutes)
+def create_access_token(subject: str, role: str, version: int = 0) -> str:
+    """`ver` must match users.token_version; bumping it signs the user out everywhere."""
+    return _token({"sub": subject, "role": role, "typ": "access", "ver": version}, get_settings().jwt_expire_minutes)
 
 
 def create_mfa_token(subject: str) -> str:
@@ -42,6 +43,32 @@ def decode_token(token: str, typ: str = "access") -> dict | None:
     except JWTError:
         return None
     return payload if payload.get("typ", "access") == typ else None
+
+
+# ---------------------------------------------------------------- password policy
+
+COMMON_PASSWORDS = {
+    "password", "password1", "password123", "passw0rd", "p@ssw0rd", "p@ssword", "qwerty", "qwerty123", "qwertyuiop",
+    "123456", "12345678", "123456789", "1234567890", "1q2w3e4r", "1qaz2wsx", "abc123", "abcd1234", "admin", "admin123",
+    "admin@123", "administrator", "welcome", "welcome1", "welcome123", "letmein", "iloveyou", "changeme", "change-me",
+    "synex", "synex123", "synex@123", "synexgroup", "quickbooks", "srilanka", "colombo",
+}
+
+
+def password_problem(password: str, username: str | None = None, email: str | None = None) -> str | None:
+    """Why a new password is too weak, or None when it is fine."""
+    if len(password) < 10:
+        return "Use at least 10 characters"
+    if not any(c.isalpha() for c in password) or not any(c.isdigit() for c in password):
+        return "Use both letters and numbers"
+    low = password.lower()
+    core = low.rstrip("0123456789!@#$%^&*.?_-")
+    if low in COMMON_PASSWORDS or core in COMMON_PASSWORDS:
+        return "This password is too common - choose another"
+    for part in (username, (email or "").split("@")[0]):
+        if part and len(part) >= 3 and part.lower() in low:
+            return "Do not use your name or username in the password"
+    return None
 
 
 # ---------------------------------------------------------------- secrets at rest (2FA keys)

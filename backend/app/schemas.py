@@ -34,6 +34,7 @@ class Me(ORM):
     role: str
     permissions: list[str]
     totp_enabled: bool = False
+    must_setup_2fa: bool = False
 
 
 class UserOut(ORM):

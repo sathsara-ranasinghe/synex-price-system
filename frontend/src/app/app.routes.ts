@@ -8,6 +8,7 @@ export const routes: Routes = [
     path: '',
     component: ShellComponent,
     canActivate: [authGuard],
+    canActivateChild: [authGuard],
     children: [
       { path: '', pathMatch: 'full', loadComponent: () => import('./pages/portal-home.component').then((m) => m.PortalHomeComponent) },
       { path: 'qb/:entity', loadComponent: () => import('./pages/qb-list.component').then((m) => m.QbListComponent) },

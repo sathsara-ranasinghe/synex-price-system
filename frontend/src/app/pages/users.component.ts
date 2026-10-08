@@ -42,7 +42,8 @@ import { User } from '../core/models';
             </mat-select>
           </mat-form-field>
           <mat-form-field><mat-label>{{ f.user_id ? 'New password (leave blank to keep)' : 'Password' }}</mat-label>
-            <input matInput type="password" [(ngModel)]="f.password" minlength="8" /></mat-form-field>
+            <input matInput type="password" [(ngModel)]="f.password" minlength="10" />
+            <mat-hint>10+ characters with letters and numbers</mat-hint></mat-form-field>
         </div>
         <div class="row toggles">
           <mat-slide-toggle [(ngModel)]="f.receive_alerts">Receive price alerts</mat-slide-toggle>

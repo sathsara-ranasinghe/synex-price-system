@@ -13,6 +13,12 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 480
 
+    # security
+    require_2fa: str = "approvers"  # off | approvers (admins, approvers, direct writers) | all
+    login_max_failures: int = 10  # wrong passwords per account before a 15-minute lock
+    login_max_failures_ip: int = 30  # wrong passwords from one address before a 15-minute lock
+    enable_api_docs: bool = False  # /api/docs; keep off on the internet
+
     # Initial admin created on first start
     admin_username: str = "admin"
     admin_password: str = "Admin@123"

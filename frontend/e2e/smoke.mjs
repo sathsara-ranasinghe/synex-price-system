@@ -39,7 +39,7 @@ const env = {
   ...process.env,
   DATABASE_URL: `sqlite:///${join(work, 'e2e.db').replace(/\\/g, '/')}`,
   QBWC_USERNAME: 'qbwc', QBWC_PASSWORD: 'secret', ADMIN_PASSWORD: 'Admin@123', JWT_SECRET: 'e2e',
-  STATIC_DIR: dist, ATTACHMENTS_DIR: join(work, 'att'), QBWC_RUN_EVERY_MINUTES: '1', SMTP_HOST: '',
+  STATIC_DIR: dist, ATTACHMENTS_DIR: join(work, 'att'), QBWC_RUN_EVERY_MINUTES: '1', SMTP_HOST: '', REQUIRE_2FA: 'off',
 };
 
 const server = spawn(python, ['run.py', String(port)], { cwd: backend, env, stdio: ['ignore', 'pipe', 'pipe'] });

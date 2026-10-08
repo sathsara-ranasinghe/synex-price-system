@@ -45,8 +45,13 @@ export class AuthService {
   }
 
   private async signedIn(token: string) {
-    try { localStorage.setItem(TOKEN_KEY, token); } catch { /* private mode */ }
+    this.setToken(token);
     await this.loadMe();
+  }
+
+  /** Replace the stored token (after a password change the server issues a new one). */
+  setToken(token: string) {
+    try { localStorage.setItem(TOKEN_KEY, token); } catch { /* private mode */ }
   }
 
   loadMe(): Promise<boolean> {
@@ -66,6 +71,7 @@ export class AuthService {
 
 export const authInterceptor: HttpInterceptorFn = (req, next) => {
   const auth = inject(AuthService);
+  const router = inject(Router);
   const token = auth.token;
   const headers: Record<string, string> = {};
   if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -75,6 +81,9 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
   return next(authed).pipe(
     catchError((err: HttpErrorResponse) => {
       if (err.status === 401 && !req.url.includes('/auth/login')) auth.logout();
+      if (err.status === 403 && /two-step verification first/i.test(String(err.error?.detail ?? ''))) {
+        auth.loadMe().then(() => router.navigateByUrl('/account'));
+      }
       return throwError(() => err);
     }),
   );
@@ -84,6 +93,10 @@ export const authGuard: CanActivateFn = async (route) => {
   const auth = inject(AuthService);
   const router = inject(Router);
   if (!auth.me() && !(await auth.loadMe())) return router.parseUrl('/login');
+  // admins and approvers must set up two-step verification before anything else
+  if (auth.me()?.must_setup_2fa && !route.routeConfig?.children && route.routeConfig?.path !== 'account') {
+    return router.parseUrl('/account');
+  }
   const needed = route.data?.['permission'] as string | undefined;
   return !needed || auth.can(needed) ? true : router.parseUrl('/');
 };

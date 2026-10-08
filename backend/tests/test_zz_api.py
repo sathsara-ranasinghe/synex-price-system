@@ -26,10 +26,10 @@ ADMIN = {**login("admin", "Admin@123"), "X-Company-Id": "1"}
 def make_user(name: str, perms: list[str], companies: list[int] | None = None) -> dict:
     role = f"r_{name}"
     client.post("/api/roles", headers=ADMIN, json={"role_name": role, "permissions": perms})
-    r = client.post("/api/users", headers=ADMIN, json={"username": name, "email": f"{name}@x.lk", "password": "Passw0rd!",
+    r = client.post("/api/users", headers=ADMIN, json={"username": name, "email": f"{name}@x.lk", "password": "Blue-Mango-73",
                                                         "role_name": role, "company_ids": companies or [1]})
     assert r.status_code == 201, r.text
-    return login(name, "Passw0rd!")
+    return login(name, "Blue-Mango-73")
 
 
 # ---------------------------------------------------------------- auth & users
@@ -45,20 +45,22 @@ def test_login_and_me():
 def test_change_password_and_deactivate():
     h = make_user("pwuser", ["sales.view"])
     assert client.post("/api/auth/change-password", headers=h,
-                       json={"current_password": "wrong", "new_password": "NewPassw0rd!"}).status_code == 400
-    assert client.post("/api/auth/change-password", headers=h,
-                       json={"current_password": "Passw0rd!", "new_password": "NewPassw0rd!"}).status_code == 204
-    h2 = login("pwuser", "NewPassw0rd!")
+                       json={"current_password": "wrong", "new_password": "NewBlue-Mango-73"}).status_code == 400
+    r = client.post("/api/auth/change-password", headers=h,
+                    json={"current_password": "Blue-Mango-73", "new_password": "NewBlue-Mango-73"})
+    assert r.status_code == 200 and r.json()["access_token"]
+    assert client.get("/api/auth/me", headers=h).status_code == 401  # other sessions are signed out
+    h2 = login("pwuser", "NewBlue-Mango-73")
     uid = client.get("/api/auth/me", headers=h2).json()["user_id"]
     assert client.patch(f"/api/users/{uid}", headers=ADMIN, json={"is_active": False}).status_code == 200
-    assert client.post("/api/auth/login", data={"username": "pwuser", "password": "NewPassw0rd!"}).status_code == 401
+    assert client.post("/api/auth/login", data={"username": "pwuser", "password": "NewBlue-Mango-73"}).status_code == 401
     assert client.get("/api/auth/me", headers=h2).status_code == 401  # old token stops working too
 
 
 def test_user_rules():
-    assert client.post("/api/users", headers=ADMIN, json={"username": "admin", "email": "a@x.lk", "password": "Passw0rd!",
+    assert client.post("/api/users", headers=ADMIN, json={"username": "admin", "email": "a@x.lk", "password": "Blue-Mango-73",
                                                            "role_name": "viewer"}).status_code == 409
-    assert client.post("/api/users", headers=ADMIN, json={"username": "badrole", "email": "a@x.lk", "password": "Passw0rd!",
+    assert client.post("/api/users", headers=ADMIN, json={"username": "badrole", "email": "a@x.lk", "password": "Blue-Mango-73",
                                                            "role_name": "no-such-role"}).status_code == 400
     assert client.post("/api/users", headers=ADMIN, json={"username": "short", "email": "a@x.lk", "password": "123",
                                                            "role_name": "viewer"}).status_code == 422

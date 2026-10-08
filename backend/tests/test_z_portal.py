@@ -233,10 +233,10 @@ def test_multi_company():
         assert last["status"] == "failed" and "Wrong company file" in last["error_message"]
 
         # a user limited to company 2 cannot see company 1
-        client.post("/api/users", headers=h, json={"username": "enguser", "email": "e@x.lk", "password": "Eng@12345",
+        client.post("/api/users", headers=h, json={"username": "enguser", "email": "e@x.lk", "password": "Eng-Pass-2468",
                                                    "role_name": "viewer", "company_ids": [eng["company_id"]]})
         hu = {"Authorization": "Bearer " + client.post("/api/auth/login", data={"username": "enguser",
-                                                                                "password": "Eng@12345"}).json()["access_token"]}
+                                                                                "password": "Eng-Pass-2468"}).json()["access_token"]}
         assert [c["name"] for c in client.get("/api/companies/mine", headers=hu).json()] == ["Synex Engineering"]
         assert client.get("/api/qb/customer", headers={**hu, "X-Company-Id": "1"}).status_code == 403
         assert client.get("/api/qb/customer", headers=hu).json()["total"] == 1

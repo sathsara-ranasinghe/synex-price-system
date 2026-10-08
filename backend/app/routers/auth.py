@@ -5,19 +5,20 @@ import time
 
 import pyotp
 import qrcode
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..deps import get_current_user, require
+from ..config import get_settings
+from ..deps import get_current_user, needs_2fa, require
 from ..models import Company, Role, User
 from ..permissions import USERS_MANAGE
 from ..schemas import Me, PasswordChange, Token, UserCreate, UserOut, UserUpdate
 from ..security import (create_access_token, create_mfa_token, decode_token, decrypt, encrypt, hash_password,
-                        verify_password)
+                        password_problem, verify_password)
 from ..services import audit
 
 router = APIRouter(prefix="/api", tags=["Auth & users"])
@@ -26,11 +27,54 @@ ISSUER = "Synex QB Portal"
 MAX_CODE_FAILURES = 5
 LOCK_SECONDS = 300
 _failures: dict[int, tuple[int, float]] = {}  # user_id -> (failed codes, locked until)
+LOGIN_WINDOW = 900  # seconds: failed passwords are counted, and locks last, 15 minutes
+_login_failures: dict[str, list[float]] = {}  # "u:<name>" / "ip:<address>" -> times of wrong passwords
+
+
+def _client_ip(request: Request) -> str:
+    """The browser's address; behind our own nginx it arrives in X-Real-IP."""
+    host = request.client.host if request.client else "?"
+    if host in ("127.0.0.1", "::1"):
+        return request.headers.get("x-real-ip") or host
+    return host
+
+
+def _recent(key: str) -> list[float]:
+    now = time.time()
+    times = [t for t in _login_failures.get(key, []) if now - t < LOGIN_WINDOW]
+    _login_failures[key] = times
+    return times
+
+
+def _login_locked(name: str, ip: str) -> bool:
+    s = get_settings()
+    return len(_recent(f"u:{name}")) >= s.login_max_failures or len(_recent(f"ip:{ip}")) >= s.login_max_failures_ip
+
+
+def _login_failed(name: str, ip: str) -> None:
+    for key in (f"u:{name}", f"ip:{ip}"):
+        _recent(key).append(time.time())
+        _login_failures[key] = _login_failures[key][-200:]
+
+
+def _sign_out_everywhere(user: User) -> None:
+    user.token_version = (user.token_version or 0) + 1
+
+
+def _strong(password: str, username: str | None, email: str | None) -> None:
+    problem = password_problem(password, username, email)
+    if problem:
+        raise HTTPException(422, problem)
+
+
+def _access(user: User) -> str:
+    return create_access_token(user.username, user.role.role_name, user.token_version or 0)
 
 
 def _me(u: User) -> Me:
     return Me(user_id=u.user_id, username=u.username, full_name=u.full_name, email=u.email,
-              role=u.role.role_name, permissions=u.role.permissions or [], totp_enabled=bool(u.totp_enabled))
+              role=u.role.role_name, permissions=u.role.permissions or [], totp_enabled=bool(u.totp_enabled),
+              must_setup_2fa=needs_2fa(u))
 
 
 def _user_out(u: User) -> UserOut:
@@ -90,17 +134,25 @@ def _register_failure(user_id: int) -> None:
 # ---------------------------------------------------------------- login
 
 @router.post("/auth/login", response_model=Token)
-def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+def login(request: Request, form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     """Sign in with username OR e-mail. With two-factor on, returns an mfa_token for /auth/login/verify."""
     ident = form.username.strip()
+    ip = _client_ip(request)
+    if _login_locked(ident.lower(), ip):
+        raise HTTPException(429, "Too many wrong passwords. Wait 15 minutes and try again.")
     user = db.query(User).filter(or_(User.username == ident, func.lower(User.email) == ident.lower())).first()
     if not user or not user.is_active or not verify_password(form.password, user.password_hash):
+        _login_failed(ident.lower(), ip)
+        if user:
+            audit.log(db, user.user_id, "user", user.user_id, "login_failed", None, {"ip": ip})
+            db.commit()
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Incorrect e-mail / username or password")
+    _login_failures.pop(f"u:{ident.lower()}", None)
     if user.totp_enabled:
         return Token(mfa_required=True, mfa_token=create_mfa_token(user.username))
-    audit.log(db, user.user_id, "user", user.user_id, "login")
+    audit.log(db, user.user_id, "user", user.user_id, "login", None, {"ip": ip})
     db.commit()
-    return Token(access_token=create_access_token(user.username, user.role.role_name))
+    return Token(access_token=_access(user))
 
 
 class VerifyIn(BaseModel):
@@ -126,7 +178,7 @@ def login_verify(body: VerifyIn, db: Session = Depends(get_db)):
     _failures.pop(user.user_id, None)
     audit.log(db, user.user_id, "user", user.user_id, "login", None, {"2fa": True})
     db.commit()
-    return Token(access_token=create_access_token(user.username, user.role.role_name))
+    return Token(access_token=_access(user))
 
 
 @router.get("/auth/me", response_model=Me)
@@ -134,13 +186,26 @@ def me(user: User = Depends(get_current_user)):
     return _me(user)
 
 
-@router.post("/auth/change-password", status_code=204)
+@router.post("/auth/change-password")
 def change_password(body: PasswordChange, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Also signs out every other browser; returns a fresh token for this one."""
     if not verify_password(body.current_password, user.password_hash):
         raise HTTPException(400, "Current password is incorrect")
+    _strong(body.new_password, user.username, user.email)
     user.password_hash = hash_password(body.new_password)
+    _sign_out_everywhere(user)
     audit.log(db, user.user_id, "user", user.user_id, "password_change")
     db.commit()
+    return {"access_token": _access(user)}
+
+
+@router.post("/auth/sign-out-everywhere")
+def sign_out_everywhere(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """End every session of this account (lost laptop, shared computer...)."""
+    _sign_out_everywhere(user)
+    audit.log(db, user.user_id, "user", user.user_id, "sign_out_everywhere")
+    db.commit()
+    return {"access_token": _access(user)}
 
 
 # ---------------------------------------------------------------- personal preferences
@@ -214,7 +279,7 @@ def twofa_enable(body: CodeIn, user: User = Depends(get_current_user), db: Sessi
     user.totp_enabled, user.recovery_codes = True, hashes
     audit.log(db, user.user_id, "user", user.user_id, "2fa_enabled")
     db.commit()
-    return {"recovery_codes": codes}
+    return {"recovery_codes": codes, "access_token": _access(user)}
 
 
 @router.post("/auth/2fa/recovery-codes")
@@ -235,6 +300,9 @@ def twofa_disable(body: DisableIn, user: User = Depends(get_current_user), db: S
     if not verify_password(body.password, user.password_hash) or not _check_second_factor(db, user, body.code):
         raise HTTPException(400, "Password or authenticator code is wrong")
     user.totp_enabled, user.totp_secret, user.recovery_codes = False, None, None
+    if needs_2fa(user):
+        db.rollback()
+        raise HTTPException(400, "Your role must use two-step verification, so it cannot be turned off")
     audit.log(db, user.user_id, "user", user.user_id, "2fa_disabled")
     db.commit()
 
@@ -264,6 +332,7 @@ def create_user(body: UserCreate, db: Session = Depends(get_db), actor: User = D
         raise HTTPException(409, "Username already exists")
     if _email_taken(db, body.email):
         raise HTTPException(409, "Another user already has this e-mail (it is used to sign in)")
+    _strong(body.password, body.username, body.email)
     u = User(username=body.username, full_name=body.full_name, email=body.email,
              password_hash=hash_password(body.password), role_id=_role(db, body.role_name).role_id,
              receive_alerts=body.receive_alerts)
@@ -286,7 +355,10 @@ def update_user(user_id: int, body: UserUpdate, db: Session = Depends(get_db),
     old = audit.snapshot(u)
     data = body.model_dump(exclude_unset=True)
     if "password" in data:
-        u.password_hash = hash_password(data.pop("password"))
+        pw = data.pop("password")
+        _strong(pw, u.username, data.get("email") or u.email)
+        u.password_hash = hash_password(pw)
+        _sign_out_everywhere(u)
     if "role_name" in data:
         u.role_id = _role(db, data.pop("role_name")).role_id
     if "company_ids" in data:
@@ -295,16 +367,19 @@ def update_user(user_id: int, body: UserUpdate, db: Session = Depends(get_db),
             u.companies = _companies(db, ids)
     if data.pop("reset_2fa", False):
         u.totp_enabled, u.totp_secret, u.recovery_codes = False, None, None
+        _sign_out_everywhere(u)
         audit.log(db, actor.user_id, "user", u.user_id, "2fa_reset_by_admin")
     if data.get("email") and _email_taken(db, data["email"], u.user_id):
         raise HTTPException(409, "Another user already has this e-mail (it is used to sign in)")
     if data.get("is_active") is False and u.user_id == actor.user_id:
         raise HTTPException(400, "You cannot deactivate yourself")
+    if data.get("is_active") is False:
+        _sign_out_everywhere(u)
     for k, v in data.items():
         setattr(u, k, v)
     new = audit.snapshot(u)
     for d in (old, new):
-        for k in ("password_hash", "totp_secret", "recovery_codes", "prefs"):
+        for k in ("password_hash", "totp_secret", "recovery_codes", "prefs", "token_version"):
             d.pop(k, None)
     audit.log(db, actor.user_id, "user", u.user_id, "update", old, new)
     db.commit()
