@@ -52,9 +52,10 @@ def envelope(body: str, version: str) -> str:
 
 
 def build_request(step: Step, *, since: datetime | None, max_returned: int, iterator_id: str | None,
-                  request_id: str) -> str:
+                  request_id: str, batch: bool = False) -> str:
+    """batch=True: no iterator / MaxReturned, so many requests can share one message (incremental syncs)."""
     attrs = f'requestID="{escape(request_id)}"'
-    if step.iterator:
+    if step.iterator and not batch:
         attrs += (f' iterator="Continue" iteratorID="{escape(iterator_id)}"' if iterator_id
                   else ' iterator="Start"')
 
@@ -65,7 +66,7 @@ def build_request(step: Step, *, since: datetime | None, max_returned: int, iter
             body += f"<DeletedDateRangeFilter><FromDeletedDate>{qb_datetime(since)}</FromDeletedDate></DeletedDateRangeFilter>"
         return f"<{step.request} {attrs}>{body}</{step.request}>"
 
-    parts = [f"<MaxReturned>{max_returned}</MaxReturned>"] if step.iterator else []
+    parts = [f"<MaxReturned>{max_returned}</MaxReturned>"] if step.iterator and not batch else []
     if step.kind == "list":
         parts.append("<ActiveStatus>All</ActiveStatus>")
         if since:

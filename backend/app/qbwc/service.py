@@ -24,10 +24,11 @@ from ..models import Company, QBWrite, SyncCheckpoint, SyncLog, SyncRequest
 from ..security import verify_password
 from ..qb import store
 from . import writes
-from .parse import parse_response
+from .parse import parse_all, parse_response
 from .qbxml import STEP_BY_NAME, STEPS, build_request, envelope
 
 WRITES_STEP = "writes"  # pseudo-step that runs approved qb_writes before the read steps
+BATCH_STEP = "batch"  # pseudo-step: every incremental read in ONE qbXML message (fast, used once all steps have checkpoints)
 
 log = logging.getLogger(__name__)
 
@@ -77,9 +78,13 @@ def authenticate(db: Session, username: str, password: str) -> list[str]:
 
     ticket = secrets.token_hex(16)
     started = _now()
+    off = set(company.disabled_entities or [])
+    steps = [st for st in STEPS if st.name not in off]
     since = {}
-    for step in STEPS:
+    have_all = True
+    for step in steps:
         cp = None if full else db.get(SyncCheckpoint, (cid, step.name))
+        have_all = have_all and cp is not None
         if cp:
             since[step.name] = (_aware(cp.last_synced_at) - CHECKPOINT_MARGIN).isoformat()
         elif step.kind != "list":  # transactions and deletions: limited history on the first sync
@@ -92,7 +97,8 @@ def authenticate(db: Session, username: str, password: str) -> list[str]:
         ticket=ticket,
         started_at=started,
         triggered_by="manual" if pending or (approved and not due) else "schedule",
-        state={"steps": ([WRITES_STEP] if approved else []) + [st.name for st in STEPS], "idx": 0,
+        state={"steps": ([WRITES_STEP] if approved else []) + ([BATCH_STEP] if have_all else [st.name for st in steps]),
+               "batch_steps": [st.name for st in steps] if have_all else [], "idx": 0,
                "writes": approved, "write_idx": 0, "write_phase": None, "iterator_id": None, "since": since,
                "page": 0, "warnings": [], "last_error": None},
     ))
@@ -151,6 +157,15 @@ def send_request_xml(db: Session, ticket: str, company_file: str, major: str, mi
             return envelope(body, version)
         st = sync.state  # all writes done; continue with the first read step
 
+    if st["steps"][st["idx"]] == BATCH_STEP:
+        bodies = []
+        for name in st.get("batch_steps", []):
+            since = st["since"].get(name)
+            bodies.append(build_request(STEP_BY_NAME[name], since=datetime.fromisoformat(since) if since else None,
+                                        max_returned=s.qbwc_max_returned, iterator_id=None, request_id=name, batch=True))
+        db.commit()
+        return envelope("".join(bodies), version)
+
     step = STEP_BY_NAME[st["steps"][st["idx"]]]
     since = st["since"].get(step.name)
     body = build_request(
@@ -178,6 +193,14 @@ def receive_response_xml(db: Session, ticket: str, response: str, hresult: str, 
         return -101
 
     step_name = st["steps"][st["idx"]]
+    if step_name == BATCH_STEP:
+        _receive_batch(db, sync, response)
+        _save_state(sync, idx=sync.state["idx"] + 1)
+        done = sync.state["idx"] >= len(sync.state["steps"])
+        if done:
+            _finish(sync)
+        db.commit()
+        return 100 if done else 99
     if step_name == WRITES_STEP:
         _receive_write(db, sync, response)
         db.commit()
@@ -222,6 +245,39 @@ def receive_response_xml(db: Session, ticket: str, response: str, hresult: str, 
         return 100
     # progress: whole steps done, plus a little for pages within the current step
     return max(1, min(99, int(st["idx"] * 100 / len(st["steps"]))))
+
+
+def _receive_batch(db: Session, sync: SyncLog, response: str) -> None:
+    """Store every response of a batched read; each successful step moves its checkpoint forward."""
+    warnings = list(sync.state.get("warnings", []))
+    try:
+        responses = parse_all(response)
+    except Exception as exc:
+        log.exception("Could not parse batched response")
+        _save_state(sync, warnings=warnings + [f"batch: {exc}"])
+        return
+    for parsed in responses:
+        name = parsed.request_id or ""
+        if name not in STEP_BY_NAME:
+            continue
+        _note_feature(db, sync.company_id, name, parsed.status_code, parsed.status_message)
+        if parsed.status_code not in (0, 1):
+            warnings.append(f"{name}: [{parsed.status_code}] {parsed.status_message}")
+            continue
+        try:
+            ins, upd = store.process(db, parsed.rets, sync.company_id)
+        except Exception as exc:
+            log.exception("Failed to store %s", name)
+            warnings.append(f"{name}: {exc}")
+            continue
+        sync.records_inserted += ins
+        sync.records_updated += upd
+        cp = db.get(SyncCheckpoint, (sync.company_id, name))
+        if cp:
+            cp.last_synced_at = sync.started_at
+        else:
+            db.add(SyncCheckpoint(company_id=sync.company_id, entity=name, last_synced_at=sync.started_at))
+    _save_state(sync, warnings=warnings)
 
 
 def _current_write(db: Session, sync: SyncLog) -> QBWrite | None:

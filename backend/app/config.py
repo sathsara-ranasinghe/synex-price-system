@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     qbwc_password: str = "change-me-qbwc"
     qbwc_public_url: str = "https://prices.synex.local/qbwc"
     qbwc_company_file: str = ""  # empty = use the company file currently open in QB
-    qbwc_run_every_minutes: int = 60
+    qbwc_run_every_minutes: int = 1  # incremental syncs are batched, so every poll can sync
     qbwc_max_returned: int = 500  # iterator page size
     qbwc_history_days: int = 365  # how far back to read POs/Bills on first sync
     qbxml_version: str = "16.0"  # QuickBooks Desktop 2024 supports qbXML 16.0

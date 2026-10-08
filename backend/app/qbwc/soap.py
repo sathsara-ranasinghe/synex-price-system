@@ -89,7 +89,7 @@ def company_qbwc_url(company) -> str:
     return company.qbwc_url or get_settings().qbwc_public_url
 
 
-def build_qwc(company, poll_minutes: int = 5) -> str:
+def build_qwc(company, poll_minutes: int = 1) -> str:
     """The .qwc file opened once in Web Connector to register one company.
 
     Web Connector 2.2+ requires a FileID and stores it in the company file as a data extension,

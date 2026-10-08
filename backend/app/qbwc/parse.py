@@ -34,3 +34,23 @@ def parse_response(xml: str) -> ParsedResponse:
         iterator_remaining=int(rs.get("iteratorRemainingCount", "0") or 0),
         rets=[r for r in rs if isinstance(r.tag, str)],
     )
+
+
+def parse_all(xml: str) -> list[ParsedResponse]:
+    """Every response in a batched qbXML message (one per request, matched by requestID)."""
+    root = etree.fromstring(_XML_DECL.sub("", xml, count=1))
+    msgs = root.find("QBXMLMsgsRs")
+    out = []
+    for rs in (msgs if msgs is not None else []):
+        if not isinstance(rs.tag, str):
+            continue
+        out.append(ParsedResponse(
+            request_id=rs.get("requestID"),
+            status_code=int(rs.get("statusCode", "0")),
+            status_severity=rs.get("statusSeverity", ""),
+            status_message=rs.get("statusMessage", ""),
+            iterator_id=rs.get("iteratorID"),
+            iterator_remaining=int(rs.get("iteratorRemainingCount", "0") or 0),
+            rets=[r for r in rs if isinstance(r.tag, str)],
+        ))
+    return out

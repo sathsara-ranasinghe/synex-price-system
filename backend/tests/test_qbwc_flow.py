@@ -61,3 +61,41 @@ def test_sync_session():
 
         assert "<UserName>qbwc</UserName>" in client.get("/api/companies/1/qwc", headers=h).text
         assert client.get("/api/audit", headers=h).status_code == 200
+
+
+def test_incremental_sync_is_one_batched_request():
+    """After the first full sync every read goes in ONE qbXML message (fast 1-minute syncs)."""
+    import re as _re
+    from html import unescape
+
+    from app.database import SessionLocal
+    from app.models import SyncCheckpoint, SyncLog
+
+    with TestClient(app) as client:
+        with SessionLocal() as db:  # make the last sync look a minute old so a new one is due
+            for s in db.query(SyncLog).all():
+                s.started_at = s.started_at.replace(year=2000)
+            db.commit()
+            assert db.query(SyncCheckpoint).filter_by(company_id=1).count() > 40
+
+        out = soap(client, "authenticate", strUserName="qbwc", strPassword="secret")
+        ticket = _re.findall(r"<string>(.*?)</string>", out)[0]
+        req = soap(client, "sendRequestXML", ticket=ticket, strHCPResponse="", strCompanyFileName=r"C:\QB\synex.qbw",
+                   qbXMLCountry="US", qbXMLMajorVers="16", qbXMLMinorVers="0")
+        xml = unescape(_re.search(r"<sendRequestXMLResult>(.*)</sendRequestXMLResult>", req, _re.S).group(1))
+        requests = _re.findall(r"<(\w+QueryRq) requestID=\"(\w+)\"", xml)
+        assert len(requests) > 40 and "iterator=" not in xml  # everything in one message, no iterators
+
+        vendor = ('<VendorQueryRs requestID="vendor" statusCode="0" statusSeverity="Info" statusMessage="OK">'
+                  '<VendorRet><ListID>80000009-1</ListID><Name>Batch Vendor</Name><IsActive>true</IsActive></VendorRet>'
+                  '</VendorQueryRs>')
+        bill = ('<BillQueryRs requestID="bill" statusCode="1" statusSeverity="Info" '
+                'statusMessage="A query request did not find a matching object"/>')
+        out = soap(client, "receiveResponseXML", ticket=ticket, hresult="", message="",
+                   response=f'<?xml version="1.0" ?><QBXML><QBXMLMsgsRs>{vendor}{bill}</QBXMLMsgsRs></QBXML>')
+        assert "<receiveResponseXMLResult>100<" in out  # done after a single round trip
+
+        h = {"Authorization": "Bearer " + client.post("/api/auth/login", data={"username": "admin",
+                                                                               "password": "Admin@123"}).json()["access_token"]}
+        names = {v["name"] for v in client.get("/api/qb/vendor", headers=h).json()["items"]}
+        assert "Batch Vendor" in names

@@ -146,7 +146,7 @@ def update_company(company_id: int, body: CompanyUpdate, db: Session = Depends(g
 
 
 @router.get("/{company_id}/qwc")
-def download_qwc(company_id: int, poll_minutes: int = Query(5, ge=1, le=1440), db: Session = Depends(get_db),
+def download_qwc(company_id: int, poll_minutes: int = Query(1, ge=1, le=1440), db: Session = Depends(get_db),
                  user: User = Depends(require(SYNC_RUN))):
     c = next((x for x in accessible_companies(db, user) if x.company_id == company_id), None)
     if not c:
