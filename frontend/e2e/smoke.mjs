@@ -104,11 +104,14 @@ try {
       current = `/qb/${e.key}/<first>`;
       await Promise.all([page.waitForNavigation({ waitUntil: 'networkidle0' }), first.click()]);
     }
-    if (e.can_add && e.permissions.create) await visit(`/qb/${e.key}/new`, 'h1');
+    if (e.can_add && e.permissions.create) {
+      await visit(`/qb/${e.key}/new`, 'h1');
+      await visit(`/qb/${e.key}/import`, 'h1');
+    }
   }
 
   console.log(`Visited ${pages.length} pages, ${meta.entities.length} entity lists, ` +
-    `${meta.entities.filter((e) => e.can_add).length} new-record forms and ${records} record pages.`);
+    `${meta.entities.filter((e) => e.can_add).length} new-record forms + import pages and ${records} record pages.`);
 } catch (e) {
   failures.push(String(e?.stack ?? e));
 } finally {

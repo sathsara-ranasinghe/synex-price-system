@@ -30,6 +30,9 @@ const FIXED = ['Name', 'RefNumber', 'TxnDate', 'CustomerRef', 'VendorRef', 'Paye
         <span class="spacer"></span>
         <button mat-stroked-button (click)="exportExcel()"><mat-icon>table_view</mat-icon> Excel</button>
         @if (e.can_add && e.permissions.create) {
+          <a mat-stroked-button [routerLink]="['/qb', e.key, 'import']"><mat-icon>upload_file</mat-icon> Import</a>
+        }
+        @if (e.can_add && e.permissions.create) {
           <a mat-flat-button color="primary" [routerLink]="['/qb', e.key, 'new']"><mat-icon>add</mat-icon> New {{ e.label.toLowerCase() }}</a>
         }
       </div>

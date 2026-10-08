@@ -11,6 +11,7 @@ export const routes: Routes = [
     children: [
       { path: '', pathMatch: 'full', loadComponent: () => import('./pages/portal-home.component').then((m) => m.PortalHomeComponent) },
       { path: 'qb/:entity', loadComponent: () => import('./pages/qb-list.component').then((m) => m.QbListComponent) },
+      { path: 'qb/:entity/import', loadComponent: () => import('./pages/qb-import.component').then((m) => m.QbImportComponent) },
       { path: 'qb/:entity/:id', loadComponent: () => import('./pages/qb-record.component').then((m) => m.QbRecordComponent) },
       { path: 'qb-reports', canActivate: [authGuard], data: { permission: 'reports.view' },
         loadComponent: () => import('./pages/qb-reports.component').then((m) => m.QbReportsComponent) },

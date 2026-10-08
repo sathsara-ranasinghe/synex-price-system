@@ -13,7 +13,7 @@ from .database import Base, SessionLocal, engine
 from .models import Role, User
 from .permissions import ROLE_PERMISSIONS
 from .qbwc import soap
-from .routers import auth, changes, companies, files, portal, system
+from .routers import auth, changes, companies, files, imports, portal, system
 from .security import hash_password
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -66,7 +66,7 @@ app.add_middleware(CORSMiddleware, allow_origins=[o.strip() for o in settings.co
                    allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
                    expose_headers=["Content-Disposition"])
 
-for r in (auth.router, companies.router, files.router, portal.roles_router, portal.router, changes.router, system.router,
+for r in (auth.router, companies.router, files.router, imports.router, portal.roles_router, portal.router, changes.router, system.router,
           soap.router):
     app.include_router(r)
 
