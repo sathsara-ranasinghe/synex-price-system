@@ -3,6 +3,13 @@ import { Injectable, inject, signal } from '@angular/core';
 import { Observable, firstValueFrom } from 'rxjs';
 import { EntityMeta, Page, PortalMeta, QbLine, QbRecord, QbRecordDetail, RefOption } from './models';
 
+export interface Insights {
+  months: string[];
+  sales: number[] | null;
+  purchases: number[] | null;
+  top_customers: { name: string; amount: number }[];
+  top_vendors: { name: string; amount: number }[];
+}
 export interface WriteResult { write_id: number; status: string; summary: string; message: string }
 export interface Attachment { attachment_id: number; filename: string; content_type: string; size: number; uploaded_by: string | null; uploaded_at: string }
 
@@ -58,6 +65,9 @@ export class PortalService {
     return this.http.get<RefOption[]>(`${this.base}/options/${target}`, { params });
   }
   dashboard() { return this.http.get<any>(`${this.base}/dashboard`); }
+  insights(months = 6) {
+    return this.http.get<Insights>(`${this.base}/insights`, { params: new HttpParams().set('months', months) });
+  }
   runReport(report_type: string, from_date: string | null, to_date: string | null) {
     return this.http.post<{ report_id: number }>(`${this.base}/reports`, { report_type, from_date, to_date });
   }

@@ -3,6 +3,7 @@ export interface Page<T> {
   total: number;
   page: number;
   page_size: number;
+  sum_amount?: number | null;
 }
 
 export interface Me {

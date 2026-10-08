@@ -126,6 +126,69 @@ def dashboard(db: Session = Depends(get_db), user: User = Depends(get_current_us
             "recent": [{**_rec_out(BY_KEY[r.entity], r).model_dump(), "label": BY_KEY[r.entity].label} for r in recent]}
 
 
+# ---------------------------------------------------------------- global search & insights
+
+@router.get("/search")
+def search(q: str = Query(min_length=2, max_length=100), limit: int = Query(20, le=50), db: Session = Depends(get_db),
+           user: User = Depends(get_current_user), co: Company = Depends(get_company)):
+    """Search every module the user can see at once (Ctrl+K)."""
+    off = set(co.disabled_entities or [])
+    keys = [e.key for e in ENTITIES if can(user, f"{e.module}.view") and e.key not in off]
+    if not keys:
+        return []
+    query = db.query(QBRecord).filter(QBRecord.company_id == co.company_id, QBRecord.entity.in_(keys),
+                                      QBRecord.deleted.is_(False))
+    for word in q.split():
+        query = query.filter(or_(QBRecord.name.ilike(_like(word)), QBRecord.party_name.ilike(_like(word))))
+    starts = QBRecord.name.ilike(_like(q.strip())[1:])  # names that start with the text come first
+    rows = (query.order_by(starts.desc(), QBRecord.is_active.desc(), QBRecord.time_modified.desc().nullslast())
+            .limit(limit).all())
+    return [{"record_id": r.record_id, "entity": r.entity, "label": BY_KEY[r.entity].label, "kind": BY_KEY[r.entity].kind,
+             "name": r.name, "party_name": r.party_name, "txn_date": r.txn_date,
+             "amount": float(r.amount) if r.amount is not None else None, "is_active": r.is_active} for r in rows]
+
+
+SALES = ("invoice", "sales_receipt")
+PURCHASES = ("bill", "check", "item_receipt")
+
+
+def _month_add(d: date, n: int) -> date:
+    m = d.month - 1 + n
+    return date(d.year + m // 12, m % 12 + 1, 1)
+
+
+@router.get("/insights")
+def insights(months: int = Query(6, ge=1, le=24), db: Session = Depends(get_db), user: User = Depends(get_current_user),
+             co: Company = Depends(get_company)):
+    """Monthly sales vs purchases and the top customers / vendors, for the home page."""
+    show_sales, show_buy = can(user, "sales.view"), can(user, "purchasing.view")
+    wanted = (SALES if show_sales else ()) + (PURCHASES if show_buy else ())
+    base = db.query(QBRecord).filter(QBRecord.company_id == co.company_id, QBRecord.entity.in_(wanted),
+                                     QBRecord.deleted.is_(False))
+    last = (base.with_entities(func.max(QBRecord.txn_date)).scalar() if wanted else None) or date.today()
+    end = _month_add(last.replace(day=1), 1)  # up to the newest month with data (old backup files too)
+    start = _month_add(end, -months)
+    series = {"sales": [0.0] * months, "purchases": [0.0] * months}
+    top: dict[str, dict[str, float]] = {"sales": {}, "purchases": {}}
+    rows = (base.filter(QBRecord.txn_date >= start, QBRecord.txn_date < end)
+            .with_entities(QBRecord.entity, QBRecord.txn_date, QBRecord.amount, QBRecord.party_name).all()) if wanted else []
+    for entity, d, amount, party in rows:
+        kind = "sales" if entity in SALES else "purchases"
+        v = float(amount or 0)
+        series[kind][(d.year - start.year) * 12 + d.month - start.month] += v
+        if party:
+            top[kind][party] = top[kind].get(party, 0) + v
+
+    def best(d: dict[str, float]):
+        return [{"name": k, "amount": round(v, 2)} for k, v in sorted(d.items(), key=lambda x: -x[1])[:5]]
+
+    return {"months": [_month_add(start, i).isoformat() for i in range(months)],
+            "sales": [round(v, 2) for v in series["sales"]] if show_sales else None,
+            "purchases": [round(v, 2) for v in series["purchases"]] if show_buy else None,
+            "top_customers": best(top["sales"]) if show_sales else [],
+            "top_vendors": best(top["purchases"]) if show_buy else []}
+
+
 # ---------------------------------------------------------------- reports (declared before /{entity} routes)
 
 @router.post("/reports", status_code=201)
@@ -199,6 +262,8 @@ def options(target: str, q: str = "", party_id: str | None = None, limit: int = 
 def list_records(entity: str, q: str | None = None, active: bool | None = True, party_id: str | None = None,
                  date_from: date | None = None, date_to: date | None = None,
                  page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=500),
+                 sort: str | None = Query(None, pattern="^(name|txn_date|party_name|amount|time_modified)$"),
+                 dir: str = Query("asc", pattern="^(asc|desc)$"),
                  db: Session = Depends(get_db), user: User = Depends(get_current_user), co: Company = Depends(get_company)):
     ent = _entity(entity, user)
     query = db.query(QBRecord).filter(QBRecord.company_id == co.company_id, QBRecord.entity == ent.key,
@@ -215,9 +280,16 @@ def list_records(entity: str, q: str | None = None, active: bool | None = True, 
     if date_to:
         query = query.filter(QBRecord.txn_date <= date_to)
     total = query.count()
-    order = (QBRecord.txn_date.desc().nullslast(), QBRecord.record_id.desc()) if ent.kind == "txn" else (QBRecord.name,)
+    sum_amount = (float(query.with_entities(func.coalesce(func.sum(QBRecord.amount), 0)).scalar() or 0)
+                  if ent.kind == "txn" else None)
+    if sort:
+        col = getattr(QBRecord, sort)
+        order = ((col.desc() if dir == "desc" else col.asc()).nullslast(), QBRecord.record_id.desc())
+    else:
+        order = (QBRecord.txn_date.desc().nullslast(), QBRecord.record_id.desc()) if ent.kind == "txn" else (QBRecord.name,)
     rows = query.order_by(*order).offset((page - 1) * page_size).limit(page_size).all()
-    return {"items": [_rec_out(ent, r) for r in rows], "total": total, "page": page, "page_size": page_size}
+    return {"items": [_rec_out(ent, r) for r in rows], "total": total, "page": page, "page_size": page_size,
+            "sum_amount": sum_amount}
 
 
 def _record(db: Session, ent: Entity, record_id: int, co: Company) -> QBRecord:

@@ -9,6 +9,7 @@ import { errorText } from '../core/auth';
 import { EntityMeta, LineMeta, QbLine, QbRecordDetail } from '../core/models';
 import { Attachment, PortalService, WriteResult, openBlob } from '../core/portal.service';
 import { QbFieldComponent } from '../shared/qb-field.component';
+import { UiService } from '../core/ui.service';
 import { MoneyPipe } from '../shared/shared';
 
 @Component({
@@ -176,6 +177,7 @@ export class QbRecordComponent {
   entity = input.required<string>();
   id = input.required<string>();
   private portal = inject(PortalService);
+  private ui = inject(UiService);
   private snack = inject(MatSnackBar);
   private router = inject(Router);
 
@@ -235,6 +237,8 @@ export class QbRecordComponent {
         } else {
           this.portal.get(key, Number(id)).subscribe((d) => {
             this.detail.set(d);
+            this.ui.addRecent({ entity: key, record_id: d.record.record_id, label: this.portal.entity(key)?.label ?? key,
+              name: d.record.name, party_name: d.record.party_name });
             this.values = structuredClone(d.form.values);
             this.lines.set(structuredClone(d.form.lines));
             this.portal.attachments(key, Number(id)).subscribe((a) => this.attachments.set(a));

@@ -21,12 +21,14 @@ html {
   @include mat.form-field-density($dense);
   @include mat.select-density($dense);
 }
-@media (prefers-color-scheme: dark) {
-  html:not([data-theme="light"]) {
-    @include mat.all-component-colors($dark);
-    @include mat.color-variants-backwards-compatibility($dark);
-  }
+@mixin dark-material {
+  @include mat.all-component-colors($dark);
+  @include mat.color-variants-backwards-compatibility($dark);
 }
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme="light"]) { @include dark-material; }
+}
+html[data-theme="dark"] { @include dark-material; }
 
 // ---------------------------------------------------------------- design tokens
 :root {
@@ -60,8 +62,7 @@ html {
   --shadow-lg: 0 12px 40px rgba(15, 23, 42, .12);
   color-scheme: light;
 }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
+@mixin dark-tokens {
     --bg: #0b0f17; --surface: #121826; --surface-2: #161d2c; --line: #232c3d; --line-strong: #2f394d;
     --text: #e8ecf3; --text-2: #c3cbd8; --muted: #8b97ab;
     --primary: #7aa7ff; --primary-hover: #9bbcff; --primary-soft: #18233a; --accent: #a78bfa;
@@ -70,7 +71,10 @@ html {
     --shadow-sm: none; --shadow: 0 0 0 1px rgba(255, 255, 255, .02); --shadow-lg: 0 12px 40px rgba(0, 0, 0, .5);
     color-scheme: dark;
   }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { @include dark-tokens; }
 }
+:root[data-theme="dark"] { @include dark-tokens; }
 
 // ---------------------------------------------------------------- base
 html, body { height: 100%; }
