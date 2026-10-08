@@ -87,6 +87,8 @@ def authenticate(db: Session, username: str, password: str) -> list[str]:
         have_all = have_all and cp is not None
         if cp:
             since[step.name] = (_aware(cp.last_synced_at) - CHECKPOINT_MARGIN).isoformat()
+        elif step.kind == "preferences":
+            since[step.name] = None
         elif step.kind != "list":  # transactions and deletions: limited history on the first sync
             since[step.name] = (started - timedelta(days=s.qbwc_history_days)).isoformat()
         else:

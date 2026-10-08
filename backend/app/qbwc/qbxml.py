@@ -15,7 +15,7 @@ from ..qb.registry import CUSTOM_FIELD_ENTITIES, ENTITIES
 class Step:
     name: str  # checkpoint key = entity key
     request: str  # e.g. "VendorQueryRq"
-    kind: str  # "list" | "txn" | "deleted_list" | "deleted_txn"
+    kind: str  # "list" | "txn" | "deleted_list" | "deleted_txn" | "preferences"
     iterator: bool = True
     include_lines: bool = True
     custom_fields: bool = False  # add OwnerID 0 so QuickBooks returns custom field values (DataExtRet)
@@ -26,7 +26,8 @@ TXN_DEL_TYPES = [e.del_type for e in ENTITIES if e.kind == "txn" and e.del_type]
 
 # Lists before transactions (vendors/items must exist before POs and bills reference them).
 STEPS: list[Step] = (
-    [Step(e.key, e.query, "list", e.iterator, custom_fields=e.key in CUSTOM_FIELD_ENTITIES)
+    [Step("preferences", "PreferencesQueryRq", "preferences", False)]
+    + [Step(e.key, e.query, "list", e.iterator, custom_fields=e.key in CUSTOM_FIELD_ENTITIES)
      for e in ENTITIES if e.kind == "list"]
     + [Step(e.key, e.query, "txn", e.iterator, e.include_lines, e.key in CUSTOM_FIELD_ENTITIES)
        for e in ENTITIES if e.kind == "txn"]
@@ -59,6 +60,8 @@ def build_request(step: Step, *, since: datetime | None, max_returned: int, iter
         attrs += (f' iterator="Continue" iteratorID="{escape(iterator_id)}"' if iterator_id
                   else ' iterator="Start"')
 
+    if step.kind == "preferences":  # company settings: class tracking, multi-currency, ...
+        return f"<{step.request} {attrs}></{step.request}>"
     if step.kind in ("deleted_list", "deleted_txn"):
         types, tag = (LIST_DEL_TYPES, "ListDelType") if step.kind == "deleted_list" else (TXN_DEL_TYPES, "TxnDelType")
         body = "".join(f"<{tag}>{t}</{tag}>" for t in types)

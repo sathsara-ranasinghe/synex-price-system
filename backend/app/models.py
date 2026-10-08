@@ -35,6 +35,8 @@ class Company(Base):
     company_file: Mapped[str | None] = mapped_column(String(500))
     # entity keys QuickBooks reported as not enabled / not available for this company file (hidden in the UI)
     disabled_entities: Mapped[list | None] = mapped_column(JSON, default=list)
+    # QuickBooks company preferences from the last sync (PreferencesQuery): class tracking, multi-currency, ...
+    preferences: Mapped[dict | None] = mapped_column(JSON)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

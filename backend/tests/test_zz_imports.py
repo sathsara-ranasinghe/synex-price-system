@@ -39,9 +39,13 @@ def test_template_for_every_entity(key):
     xl = client.get(f"/api/files/template/{key}", headers=H)
     assert xl.status_code == 200
     wb = load_workbook(io.BytesIO(xl.content))
-    assert wb.sheetnames[1:] == ["Example", "Help"]
+    assert wb.sheetnames[1:] == ["Lists", "Example", "Help"] and wb["Lists"].sheet_state == "hidden"
     header = [c.value for c in wb.worksheets[0][1]]
-    assert header == [c.header for c in columns(next(e for e in ENTITIES if e.key == key))]
+    from app.models import Company
+    from app.routers.imports import hidden_features
+    with SessionLocal() as db:
+        hide = hidden_features(db.get(Company, 1))
+    assert header == [c.header for c in columns(next(e for e in ENTITIES if e.key == key), hide)]
     csv_ = client.get(f"/api/files/template/{key}", headers=H, params={"format": "csv"})
     assert csv_.status_code == 200 and csv_.content.decode("utf-8-sig").splitlines()[0].split(",")[0] == header[0]
 
@@ -111,3 +115,49 @@ def test_import_rules():
     hv = {"Authorization": "Bearer " + client.post("/api/auth/login", data={"username": "impviewer", "password": "Passw0rd!"}
                                                    ).json()["access_token"]}
     assert client.get("/api/files/template/customer", headers=hv).status_code == 403
+
+
+def test_template_follows_company_file():
+    from app.models import Company
+    with SessionLocal() as db:
+        co = db.get(Company, 1)
+        old = co.preferences
+        co.preferences = {"AccountingPreferences": {"IsUsingClassTracking": "false"},
+                          "MultiCurrencyPreferences": {"IsMultiCurrencyOn": "false"}}
+        db.commit()
+    try:
+        wb = load_workbook(io.BytesIO(client.get("/api/files/template/invoice", headers=H).content))
+        header = [c.value for c in wb.worksheets[0][1]]
+        assert "Class" not in header and "Line - Class" not in header and not any("Exchange rate" in h for h in header)
+        assert "Customer:Job" in header
+        # dropdowns: customers of this company in the hidden Lists sheet, validation on the Customer column
+        lists = wb["Lists"]
+        cols = {lists.cell(row=1, column=i).value: i for i in range(1, lists.max_column + 1)}
+        customers = [lists.cell(row=r, column=cols["Customer:Job"]).value for r in range(2, lists.max_row + 1)]
+        assert "Import Customer" in customers
+        ws = wb.worksheets[0]
+        cust_letter = chr(ord("A") + header.index("Customer:Job"))
+        assert any(str(dv.sqref).startswith(f"{cust_letter}2") for dv in ws.data_validations.dataValidation)
+        # previously exported columns are still accepted on import
+        data = "Customer name,Currency (multi-currency files)\nGamma Ltd,\n"
+        r = client.post("/api/files/import/customer/preview", headers=H, files={"file": ("c.csv", data, "text/csv")}).json()
+        assert r["valid"] == 1
+    finally:
+        with SessionLocal() as db:
+            db.get(Company, 1).preferences = old
+            db.commit()
+
+
+def test_preferences_are_synced():
+    from app.models import Company
+    from app.qb import store
+    from lxml import etree
+    ret = etree.fromstring("<PreferencesRet><AccountingPreferences><IsUsingClassTracking>true</IsUsingClassTracking>"
+                           "</AccountingPreferences></PreferencesRet>")
+    with SessionLocal() as db:
+        old = db.get(Company, 1).preferences
+        store.process(db, [ret], 1)
+        db.commit()
+        assert db.get(Company, 1).preferences["AccountingPreferences"]["IsUsingClassTracking"] == "true"
+        db.get(Company, 1).preferences = old
+        db.commit()

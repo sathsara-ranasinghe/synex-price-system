@@ -44,6 +44,8 @@ def after_create_all(engine: Engine) -> None:
                 conn.execute(text("ALTER TABLE companies ADD COLUMN disabled_entities JSON"))
             if "qbwc_url" not in cols:
                 conn.execute(text("ALTER TABLE companies ADD COLUMN qbwc_url VARCHAR(300)"))
+            if "preferences" not in cols:
+                conn.execute(text("ALTER TABLE companies ADD COLUMN preferences JSON"))
         if engine.dialect.name == "postgresql":
             conn.execute(text("ALTER TABLE qb_records DROP CONSTRAINT IF EXISTS uq_qb_record"))
             conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_qb_record_company ON qb_records (company_id, entity, qb_id)"))

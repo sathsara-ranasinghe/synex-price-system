@@ -42,7 +42,7 @@ def test_sync_session():
         assert "nvu" in soap(client, "authenticate", strUserName="qbwc", strPassword="wrong")
 
         sent = run_qbwc_session(client)
-        assert sent[0] == "CustomerQueryRq" and "BillQueryRq" in sent and sent[-1] == "TxnDeletedQueryRq"
+        assert sent[:2] == ["PreferencesQueryRq", "CustomerQueryRq"] and "BillQueryRq" in sent and sent[-1] == "TxnDeletedQueryRq"
 
         # straight after a sync nothing is due
         out = soap(client, "authenticate", strUserName="qbwc", strPassword="secret")

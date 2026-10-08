@@ -2,7 +2,7 @@
 
 from sqlalchemy.orm import Session
 
-from ..models import QBRecord
+from ..models import Company, QBRecord
 from . import builder
 from .registry import BY_RET, ENTITIES
 
@@ -52,6 +52,11 @@ def process(db: Session, rets, company_id: int) -> tuple[int, int]:
     inserted = updated = 0
     for ret in rets:
         if not isinstance(ret.tag, str):
+            continue
+        if ret.tag == "PreferencesRet":
+            company = db.get(Company, company_id)
+            if company is not None:
+                company.preferences = builder.to_dict(ret)
             continue
         if ret.tag in ("ListDeletedRet", "TxnDeletedRet"):
             updated += mark_deleted(db, ret, company_id)

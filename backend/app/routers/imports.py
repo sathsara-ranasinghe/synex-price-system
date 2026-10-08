@@ -14,7 +14,8 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
-from openpyxl.utils import get_column_letter
+from openpyxl.utils import get_column_letter, quote_sheetname
+from openpyxl.worksheet.datavalidation import DataValidation
 from pydantic import BaseModel
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -58,13 +59,30 @@ def _entity(key: str, user: User) -> Entity:
     return ent
 
 
-def columns(ent: Entity) -> list[Col]:
+def hidden_features(company: Company) -> set[str]:
+    """Features this company file does not use, from the QuickBooks preferences read on sync."""
+    prefs = company.preferences or {}
+    hide = set()
+    if builder.get(prefs, "AccountingPreferences/IsUsingClassTracking") == "false":
+        hide.add("class")
+    if builder.get(prefs, "MultiCurrencyPreferences/IsMultiCurrencyOn") == "false" \
+            or "currency" in (company.disabled_entities or []):
+        hide.add("currency")
+    return hide
+
+
+def _hidden(f: F, hide: set[str]) -> bool:
+    return ("class" in hide and f.ref == "class") or \
+        ("currency" in hide and (f.ref == "currency" or f.path == "ExchangeRate"))
+
+
+def columns(ent: Entity, hide: set[str] | frozenset = frozenset()) -> list[Col]:
     cols: list[Col] = []
     if ent.lines:
         cols.append(Col("Doc key", "key"))
     used = set()
     for f in ent.fields:
-        if not f.add:
+        if not f.add or _hidden(f, hide):
             continue
         if f.type == "address":
             for part, label in ADDRESS_COLS:
@@ -78,7 +96,7 @@ def columns(ent: Entity) -> list[Col]:
     seen = set()
     for lt in ent.lines:
         for f in lt.fields:
-            if f.label not in seen:
+            if f.label not in seen and not _hidden(f, hide):
                 seen.add(f.label)
                 cols.append(Col(f"Line - {f.label}", "line", f, line_label=f.label))
     return cols
@@ -90,10 +108,24 @@ def _line_field(lt: LineType, label: str) -> F | None:
 
 # ---------------------------------------------------------------- template
 
+DROPDOWN_ROWS = MAX_ROWS + 1  # data validation range on the first sheet
+MAX_LIST_NAMES = 20000
+
+
+def _names(db: Session, company_id: int, f: F) -> list[str]:
+    targets = REF_GROUPS.get(f.ref, [f.ref])
+    q = db.query(QBRecord.name).filter(QBRecord.company_id == company_id, QBRecord.entity.in_(targets),
+                                       QBRecord.deleted.is_(False), QBRecord.name.isnot(None))
+    if BY_KEY[targets[0]].kind == "list":
+        q = q.filter(QBRecord.is_active.is_(True))
+    return sorted({n for (n,) in q.limit(MAX_LIST_NAMES)}, key=str.lower)
+
+
 @router.get("/template/{entity}")
-def template(entity: str, format: str = Query("xlsx", pattern="^(xlsx|csv)$"), user: User = Depends(get_current_user)):
+def template(entity: str, format: str = Query("xlsx", pattern="^(xlsx|csv)$"), db: Session = Depends(get_db),
+             user: User = Depends(get_current_user), co: Company = Depends(get_company)):
     ent = _entity(entity, user)
-    cols = columns(ent)
+    cols = columns(ent, hidden_features(co))
     example = []
     for c in cols:
         if c.kind == "key":
@@ -128,6 +160,40 @@ def template(entity: str, format: str = Query("xlsx", pattern="^(xlsx|csv)$"), u
         cell.fill = PatternFill("solid", fgColor="0A5C80" if required else "5B7F95")
         ws.column_dimensions[get_column_letter(i)].width = max(14, min(40, len(c.header) + 4))
     ws.freeze_panes = "A2"
+
+    # dropdowns: QuickBooks names of THIS company for references, fixed values for enums / yes-no / line type
+    lists = wb.create_sheet("Lists")
+    list_col = 0
+    for i, c in enumerate(cols, start=1):
+        letter = get_column_letter(i)
+        target = f"{letter}2:{letter}{DROPDOWN_ROWS}"
+        options: list[str] = []
+        warn = False
+        if c.kind == "linetype":
+            options = [lt.key for lt in ent.lines]
+        elif c.field is not None and c.kind != "address":
+            if c.field.type == "enum":
+                options = list(c.field.options)
+            elif c.field.type == "bool":
+                options = ["Yes", "No"]
+            elif c.field.type in ("ref", "txnref"):
+                options, warn = _names(db, co.company_id, c.field), True
+        if not options:
+            continue
+        list_col += 1
+        lcol = get_column_letter(list_col)
+        lists.cell(row=1, column=list_col, value=c.header)
+        for r, name in enumerate(options, start=2):
+            lists.cell(row=r, column=list_col, value=name)
+        dv = DataValidation(type="list", formula1=f"={quote_sheetname('Lists')}!${lcol}$2:${lcol}${len(options) + 1}",
+                            allow_blank=True, showErrorMessage=True,
+                            errorStyle="warning" if warn else "stop",
+                            errorTitle="Not in the list",
+                            error=("This name is not in QuickBooks yet. Keep it only if it will exist before you import."
+                                   if warn else "Pick a value from the list."))
+        ws.add_data_validation(dv)
+        dv.add(target)
+    lists.sheet_state = "hidden"
 
     ex = wb.create_sheet("Example")
     ex.append([c.header for c in cols])

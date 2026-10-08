@@ -32,7 +32,9 @@ interface Result { sent_to_quickbooks: number; waiting_for_approval: number; ski
             <p class="muted">Fill the first sheet. The <strong>Help</strong> sheet lists every column, which ones are required
               and the allowed values; the <strong>Example</strong> sheet shows a filled row.
               @if (e.lines.length) { Rows with the same <strong>Doc key</strong> become one {{ e.label.toLowerCase() }} - one line per row. }
-              Customers, items, accounts and other lists are entered <strong>by name</strong>, exactly as in QuickBooks.</p>
+              Customers, items, accounts and other lists are picked from <strong>dropdowns with this company's
+              QuickBooks names</strong>. The template only has the columns this company file uses, so download it
+              again after changing companies or QuickBooks settings.</p>
             <button mat-flat-button color="primary" (click)="template('xlsx')"><mat-icon>table_view</mat-icon> Excel template</button>
             <button mat-stroked-button (click)="template('csv')"><mat-icon>description</mat-icon> CSV template</button>
           </div>
