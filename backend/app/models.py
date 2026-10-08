@@ -59,6 +59,10 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     receive_alerts: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # two-factor authentication (Google Authenticator / TOTP); the secret is encrypted (security.encrypt)
+    totp_secret: Mapped[str | None] = mapped_column(String(300))
+    totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    recovery_codes: Mapped[list | None] = mapped_column(JSON)  # bcrypt hashes of unused one-time codes
 
     role: Mapped[Role] = relationship(lazy="joined")
     companies: Mapped[list[Company]] = relationship(secondary=user_companies, lazy="selectin")

@@ -47,6 +47,9 @@ import { User } from '../core/models';
         <div class="row toggles">
           <mat-slide-toggle [(ngModel)]="f.receive_alerts">Receive price alerts</mat-slide-toggle>
           @if (f.user_id) { <mat-slide-toggle [(ngModel)]="f.is_active">Active</mat-slide-toggle> }
+          @if (f.user_id && f.totp_enabled) {
+            <button mat-stroked-button type="button" (click)="reset2fa(f)"><mat-icon>phonelink_erase</mat-icon> Reset two-step (lost phone)</button>
+          }
         </div>
         <div class="actions">
           <button mat-button (click)="form.set(null)">Cancel</button>
@@ -57,11 +60,12 @@ import { User } from '../core/models';
 
     <div class="panel flush scroll">
       <table class="simple">
-        <tr><th>Username</th><th>Name</th><th>Email</th><th>Role</th><th>Companies</th><th>Status</th><th>Created</th><th></th></tr>
+        <tr><th>Username</th><th>Name</th><th>Email</th><th>Role</th><th>Companies</th><th>2-step</th><th>Status</th><th>Created</th><th></th></tr>
         @for (u of users(); track u.user_id) {
           <tr>
             <td>{{ u.username }}</td><td>{{ u.full_name }}</td><td>{{ u.email }}</td><td>{{ u.role_name }}</td>
             <td class="small">{{ u.role_name === 'admin' ? 'All' : companyNames(u.company_ids) }}</td>
+            <td><span class="tag" [class.ok]="u.totp_enabled">{{ u.totp_enabled ? 'On' : 'Off' }}</span></td>
             <td><span class="tag" [class.ok]="u.is_active" [class.bad]="!u.is_active">{{ u.is_active ? 'active' : 'disabled' }}</span></td>
             <td>{{ u.created_at | date: 'mediumDate' }}</td>
             <td><button mat-icon-button (click)="edit(u)" aria-label="Edit"><mat-icon>edit</mat-icon></button></td>
@@ -97,6 +101,14 @@ export class UsersComponent implements OnInit {
     this.form.set({ username: '', full_name: '', email: '', role_name: 'viewer', receive_alerts: true, password: '',
       company_ids: first ? [first] : [] });
   }
+  reset2fa(f: Partial<User>) {
+    if (!confirm(`Turn off two-step verification for ${f.username}? They can set it up again after signing in.`)) return;
+    this.api.updateUser(f.user_id!, { reset_2fa: true }).subscribe({
+      next: (u) => { this.form.set({ ...f, totp_enabled: u.totp_enabled }); this.load(); this.snack.open('Two-step verification reset', '', { duration: 2500 }); },
+      error: (e) => this.snack.open(errorText(e), 'OK'),
+    });
+  }
+
   companyNames(ids: number[]) {
     return ids.map((id) => this.companies().find((c) => c.company_id === id)?.name).filter(Boolean).join(', ') || '—';
   }

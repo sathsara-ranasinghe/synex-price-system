@@ -29,12 +29,23 @@ export class AuthService {
     return this.me()?.permissions.includes(permission) ?? false;
   }
 
-  async login(username: string, password: string): Promise<void> {
+  /** Returns an mfa token when the account uses an authenticator app (then call verifyCode). */
+  async login(username: string, password: string): Promise<string | null> {
     const body = new URLSearchParams({ username, password });
-    const res = await firstValueFrom(this.http.post<{ access_token: string }>('/api/auth/login', body.toString(), {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    }));
-    try { localStorage.setItem(TOKEN_KEY, res.access_token); } catch { /* private mode */ }
+    const res = await firstValueFrom(this.http.post<{ access_token: string | null; mfa_required: boolean; mfa_token: string | null }>(
+      '/api/auth/login', body.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }));
+    if (res.mfa_required) return res.mfa_token;
+    await this.signedIn(res.access_token!);
+    return null;
+  }
+
+  async verifyCode(mfaToken: string, code: string): Promise<void> {
+    const res = await firstValueFrom(this.http.post<{ access_token: string }>('/api/auth/login/verify', { mfa_token: mfaToken, code }));
+    await this.signedIn(res.access_token);
+  }
+
+  private async signedIn(token: string) {
+    try { localStorage.setItem(TOKEN_KEY, token); } catch { /* private mode */ }
     await this.loadMe();
   }
 
@@ -63,7 +74,7 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
   const authed = Object.keys(headers).length ? req.clone({ setHeaders: headers }) : req;
   return next(authed).pipe(
     catchError((err: HttpErrorResponse) => {
-      if (err.status === 401 && !req.url.endsWith('/auth/login')) auth.logout();
+      if (err.status === 401 && !req.url.includes('/auth/login')) auth.logout();
       return throwError(() => err);
     }),
   );

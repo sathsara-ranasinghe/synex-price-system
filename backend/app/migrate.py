@@ -46,6 +46,12 @@ def after_create_all(engine: Engine) -> None:
                 conn.execute(text("ALTER TABLE companies ADD COLUMN qbwc_url VARCHAR(300)"))
             if "preferences" not in cols:
                 conn.execute(text("ALTER TABLE companies ADD COLUMN preferences JSON"))
+        if "users" in tables:
+            ucols = {c["name"] for c in insp.get_columns("users")}
+            for col, ddl in (("totp_secret", "VARCHAR(300)"), ("totp_enabled", "BOOLEAN DEFAULT FALSE"),
+                             ("recovery_codes", "JSON")):
+                if col not in ucols:
+                    conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} {ddl}"))
         if engine.dialect.name == "postgresql":
             conn.execute(text("ALTER TABLE qb_records DROP CONSTRAINT IF EXISTS uq_qb_record"))
             conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_qb_record_company ON qb_records (company_id, entity, qb_id)"))

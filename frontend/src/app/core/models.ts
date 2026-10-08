@@ -12,6 +12,7 @@ export interface Me {
   email: string;
   role: string;
   permissions: string[];
+  totp_enabled: boolean;
 }
 
 export interface User {
@@ -24,6 +25,7 @@ export interface User {
   receive_alerts: boolean;
   created_at: string;
   company_ids: number[];
+  totp_enabled: boolean;
 }
 
 

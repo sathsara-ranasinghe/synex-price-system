@@ -103,6 +103,7 @@ const MODULE_ICONS: Record<string, string> = {
 
     <mat-menu #userMenu="matMenu" xPosition="after" yPosition="above">
       <div class="menu-head">{{ auth.me()?.email }}</div>
+      <a mat-menu-item routerLink="/account"><mat-icon>manage_accounts</mat-icon>Account &amp; security</a>
       <button mat-menu-item (click)="auth.logout()"><mat-icon>logout</mat-icon>Sign out</button>
     </mat-menu>
   `,

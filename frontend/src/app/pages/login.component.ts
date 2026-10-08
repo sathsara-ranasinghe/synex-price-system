@@ -28,15 +28,41 @@ import { AuthService, errorText } from '../core/auth';
 
       <!-- form -->
       <main class="side">
+        @if (mfaToken()) {
+          <form class="form" (ngSubmit)="verify()" [class.shake]="shake()">
+            <img class="mobile-logo" src="logo.png" alt="Synex Group" width="72" height="72" />
+            <div class="shield"><mat-icon>phonelink_lock</mat-icon></div>
+            <h2>Two-step verification</h2>
+            <p class="sub">{{ useRecovery() ? 'Enter one of your recovery codes (like AB12-CD34).'
+              : 'Open Google Authenticator on your phone and enter the 6-digit code for Synex QB Portal.' }}</p>
+            <label for="c">{{ useRecovery() ? 'Recovery code' : 'Authenticator code' }}</label>
+            <div class="input">
+              <mat-icon>pin</mat-icon>
+              <input id="c" name="code" [(ngModel)]="code" required autocomplete="one-time-code" autofocus
+                     [attr.inputmode]="useRecovery() ? 'text' : 'numeric'" [attr.maxlength]="useRecovery() ? 9 : 6"
+                     [placeholder]="useRecovery() ? 'XXXX-XXXX' : '123456'" class="code" />
+            </div>
+            @if (error()) { <div class="note err" role="alert"><mat-icon>error_outline</mat-icon>{{ error() }}</div> }
+            <button class="go" [disabled]="busy() || code.trim().length < 6">
+              @if (busy()) { <mat-spinner diameter="20" /> } @else { Verify }
+            </button>
+            <div class="links">
+              <button type="button" class="link" (click)="useRecovery.set(!useRecovery()); code = ''; error.set('')">
+                {{ useRecovery() ? 'Use the authenticator app' : 'Lost your phone? Use a recovery code' }}</button>
+              <button type="button" class="link" (click)="back()">Back</button>
+            </div>
+          </form>
+        } @else {
         <form class="form" (ngSubmit)="submit()" [class.shake]="shake()">
           <img class="mobile-logo" src="logo.png" alt="Synex Group" width="72" height="72" />
           <h2>Sign in</h2>
           <p class="sub">Use the account your administrator gave you.</p>
 
-          <label for="u">Username</label>
+          <label for="u">E-mail or username</label>
           <div class="input">
-            <mat-icon>person_outline</mat-icon>
-            <input id="u" name="username" [(ngModel)]="username" required autocomplete="username" autofocus />
+            <mat-icon>alternate_email</mat-icon>
+            <input id="u" name="username" [(ngModel)]="username" required autocomplete="username" autofocus
+                   placeholder="name@synexint.com" />
           </div>
 
           <label for="p">Password</label>
@@ -54,6 +80,7 @@ import { AuthService, errorText } from '../core/auth';
             @if (busy()) { <mat-spinner diameter="20" /> } @else { Sign in }
           </button>
         </form>
+        }
         <small class="foot">© {{ year }} Synex Group · Since 1999</small>
       </main>
     </div>
@@ -111,6 +138,13 @@ import { AuthService, errorText } from '../core/auth';
     .go:disabled { opacity: .5; cursor: default; }
     .go mat-spinner { --mdc-circular-progress-active-indicator-color: #fff; }
     .foot { color: #8aa0ae; font-size: 12.5px; }
+    .input input::placeholder { color: #a9b8c2; }
+    .code { letter-spacing: .3em; font-size: 20px !important; font-variant-numeric: tabular-nums; }
+    .shield { width: 52px; height: 52px; border-radius: 14px; display: grid; place-items: center; margin-bottom: 14px;
+      background: #e6f0f5; color: var(--brand); }
+    .links { display: flex; justify-content: space-between; margin-top: 14px; }
+    .link { border: 0; background: none; color: var(--brand); font: inherit; font-size: 13.5px; cursor: pointer; padding: 0; }
+    .link:hover { text-decoration: underline; }
 
     .shake { animation: shake .35s; }
     @keyframes shake { 25%, 75% { transform: translateX(-6px); } 50% { transform: translateX(6px); } }
@@ -133,7 +167,29 @@ export class LoginComponent {
   caps = signal(false);
   shake = signal(false);
   error = signal('');
+  mfaToken = signal<string | null>(null);
+  useRecovery = signal(false);
+  code = '';
   year = new Date().getFullYear();
+
+  async verify() {
+    this.busy.set(true);
+    this.error.set('');
+    try {
+      await this.auth.verifyCode(this.mfaToken()!, this.code.trim());
+      this.router.navigate(['/']);
+    } catch (e) {
+      this.error.set(errorText(e));
+      if (/expired/i.test(this.error())) this.back();
+      this.shake.set(true);
+      setTimeout(() => this.shake.set(false), 400);
+      this.code = '';
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  back() { this.mfaToken.set(null); this.useRecovery.set(false); this.code = ''; }
 
   onKey(e: KeyboardEvent) { this.caps.set(!!e.getModifierState?.('CapsLock')); }
 
@@ -141,7 +197,12 @@ export class LoginComponent {
     this.busy.set(true);
     this.error.set('');
     try {
-      await this.auth.login(this.username, this.password);
+      const mfa = await this.auth.login(this.username, this.password);
+      if (mfa) {
+        this.mfaToken.set(mfa);
+        this.password = '';
+        return;
+      }
       this.router.navigate(['/']);
     } catch (e) {
       this.error.set(errorText(e));

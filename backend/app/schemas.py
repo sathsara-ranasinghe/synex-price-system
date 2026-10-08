@@ -20,8 +20,10 @@ class Page(BaseModel, Generic[T]):
 # ---------------------------------------------------------------- auth / users
 
 class Token(BaseModel):
-    access_token: str
+    access_token: str | None = None
     token_type: str = "bearer"
+    mfa_required: bool = False
+    mfa_token: str | None = None  # when mfa_required: send it with the authenticator code to /auth/login/verify
 
 
 class Me(ORM):
@@ -31,6 +33,7 @@ class Me(ORM):
     email: str
     role: str
     permissions: list[str]
+    totp_enabled: bool = False
 
 
 class UserOut(ORM):
@@ -43,6 +46,7 @@ class UserOut(ORM):
     receive_alerts: bool
     created_at: datetime
     company_ids: list[int] = []
+    totp_enabled: bool = False
 
 
 class UserCreate(BaseModel):
@@ -63,6 +67,7 @@ class UserUpdate(BaseModel):
     is_active: bool | None = None
     receive_alerts: bool | None = None
     company_ids: list[int] | None = None
+    reset_2fa: bool = False  # admin: turn off two-factor for a user who lost their phone
 
 
 class PasswordChange(BaseModel):
