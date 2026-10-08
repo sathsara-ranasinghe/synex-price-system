@@ -93,6 +93,10 @@ export function errorText(err: unknown): string {
   const e = err as HttpErrorResponse;
   const detail = e?.error?.detail;
   if (typeof detail === 'string') return detail;
-  if (Array.isArray(detail)) return detail.map((d) => d.msg).join('; ');
+  if (Array.isArray(detail))
+    return detail.map((d) => {
+      const field = String(d.loc?.[d.loc.length - 1] ?? '').replace(/_/g, ' ').replace(/^qbwc /, 'Web Connector ');
+      return field && field !== 'body' ? `${field}: ${d.msg}` : d.msg;
+    }).join('; ');
   return e?.message ?? 'Something went wrong';
 }

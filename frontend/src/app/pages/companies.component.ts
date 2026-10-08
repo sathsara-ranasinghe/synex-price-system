@@ -26,9 +26,12 @@ import { Company, CompanyService } from '../core/company.service';
       <section class="panel form">
         <h2>{{ f.company_id ? 'Edit ' + f.name : 'New company' }}</h2>
         <div class="grid">
-          <mat-form-field><mat-label>Company name</mat-label><input matInput [(ngModel)]="f.name" required /></mat-form-field>
+          <mat-form-field><mat-label>Company name</mat-label><input matInput [(ngModel)]="f.name" required (blur)="fillUser(f)" /></mat-form-field>
           <mat-form-field><mat-label>Web Connector username</mat-label>
-            <input matInput [(ngModel)]="f.qbwc_username" [disabled]="!!f.company_id" required /></mat-form-field>
+            <input matInput [(ngModel)]="f.qbwc_username" [disabled]="!!f.company_id" required placeholder="synex_trading" />
+            <mat-hint>Letters, numbers, _ . - only (no spaces)</mat-hint>
+            @if (!f.company_id && f.qbwc_username && !userOk(f.qbwc_username)) {
+              <mat-hint class="bad">No spaces or symbols - try {{ suggestUser(f.qbwc_username) }}</mat-hint> }</mat-form-field>
           <mat-form-field><mat-label>{{ f.company_id ? 'New Web Connector password (blank = keep)' : 'Web Connector password' }}</mat-label>
             <input matInput type="password" [(ngModel)]="f.password" minlength="8" autocomplete="new-password" /></mat-form-field>
         </div>
@@ -51,7 +54,7 @@ import { Company, CompanyService } from '../core/company.service';
         <p class="muted small">Use a password of at least 8 characters. You type it once in Web Connector on the QuickBooks computer.</p>
         <div class="actions">
           <button mat-button (click)="form.set(null)">Cancel</button>
-          <button mat-flat-button color="primary" (click)="save()">Save</button>
+          <button mat-flat-button color="primary" (click)="save()" [disabled]="!valid(f)">Save</button>
         </div>
       </section>
     }
@@ -98,7 +101,8 @@ import { Company, CompanyService } from '../core/company.service';
     </div>
   `,
   styles: [`
-    .form { margin-bottom: 18px; } .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px 16px; }
+    .form { margin-bottom: 18px; } .bad { color: var(--danger); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px 16px; }
     .actions { display: flex; justify-content: flex-end; gap: 8px; } .small { font-size: 12.5px; }
     .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 16px; }
     .card.off { opacity: .6; }
@@ -148,6 +152,17 @@ export class CompaniesComponent implements OnInit {
       next: () => { this.snack.open(msg, '', { duration: 2500 }); this.form.set(null); this.load(); this.svc.load(); },
       error: (e: unknown) => this.snack.open(errorText(e), 'OK'),
     };
+  }
+
+  userOk(u: string) { return /^[A-Za-z0-9_.\-]{3,100}$/.test(u); }
+  suggestUser(name: string) { return name.trim().toLowerCase().replace(/[^a-z0-9_.\-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 100); }
+  fillUser(f: { company_id?: number; name: string; qbwc_username: string }) {
+    if (!f.company_id && !f.qbwc_username && f.name) f.qbwc_username = this.suggestUser(f.name);
+  }
+  valid(f: { company_id?: number; name: string; qbwc_username: string; password: string }) {
+    if ((f.name || '').trim().length < 2) return false;
+    if (f.company_id) return !f.password || f.password.length >= 8;
+    return this.userOk(f.qbwc_username) && (f.password || '').length >= 8;
   }
 
   save() {
