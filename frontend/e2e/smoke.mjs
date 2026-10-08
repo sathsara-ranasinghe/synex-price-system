@@ -92,7 +92,7 @@ try {
     if (expectSelector && !(await page.$(expectSelector))) failures.push(`${path}: missing ${expectSelector}`);
   };
 
-  const pages = ['/', '/qb-reports', '/qb-changes', '/sync', '/companies', '/users', '/roles', '/audit', '/notifications'];
+  const pages = ['/', '/qb-reports', '/qb-changes', '/sync', '/companies', '/users', '/roles', '/audit', '/notifications', '/aging', '/aging?side=ap', '/stock-alerts', '/account'];
   for (const p of pages) await visit(p, 'h1');
 
   let records = 0;

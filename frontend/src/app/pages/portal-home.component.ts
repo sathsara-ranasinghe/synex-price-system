@@ -8,6 +8,7 @@ import { CompanyService } from '../core/company.service';
 import { QbRecord } from '../core/models';
 import { Insights, PortalService } from '../core/portal.service';
 import { UiService } from '../core/ui.service';
+import { InsightsService } from '../core/insights.service';
 import { MoneyPipe } from '../shared/shared';
 
 const MODULE_STYLE: Record<string, { icon: string; hue: string }> = {
@@ -55,14 +56,14 @@ function short(v: number): string {
     <div class="kpis">
       @if (d(); as d) {
         @if (d.open_ar !== null) {
-          <a class="kpi" routerLink="/qb/invoice">
+          <a class="kpi" routerLink="/aging" [queryParams]="{ side: 'ar' }">
             <span class="ic" style="--h:#2563eb"><mat-icon>call_received</mat-icon></span>
             <span class="lbl">Open receivables</span><strong>{{ d.open_ar | money }}</strong>
             <span class="hint">Customers still owe you</span>
           </a>
         }
         @if (d.open_ap !== null) {
-          <a class="kpi" routerLink="/qb/bill">
+          <a class="kpi" routerLink="/aging" [queryParams]="{ side: 'ap' }">
             <span class="ic" style="--h:#0891b2"><mat-icon>call_made</mat-icon></span>
             <span class="lbl">Open payables</span><strong>{{ d.open_ap | money }}</strong>
             <span class="hint">You still owe vendors</span>
@@ -78,6 +79,15 @@ function short(v: number): string {
               } @else { {{ s.value ? 'No sales the month before' : 'No sales yet' }} }
             </span>
           </div>
+        }
+        @if (stock(); as st) {
+          @if (st.count) {
+            <a class="kpi attn" routerLink="/stock-alerts">
+              <span class="ic" style="--h:#dc2626"><mat-icon>production_quantity_limits</mat-icon></span>
+              <span class="lbl">Items to reorder</span><strong>{{ st.count }}</strong>
+              <span class="hint">{{ st.uncovered }} not on order yet</span>
+            </a>
+          }
         }
         <a class="kpi" routerLink="/qb-changes" [class.attn]="d.pending_changes > 0">
           <span class="ic" style="--h:#d97706"><mat-icon>pending_actions</mat-icon></span>
@@ -315,6 +325,8 @@ export class PortalHomeComponent implements OnInit {
   today = new Date();
   months = signal(6);
   ins = signal<Insights | null>(null);
+  stock = signal<{ count: number; uncovered: number } | null>(null);
+  private insightsSvc = inject(InsightsService);
   d = signal<{ counts: Record<string, number>; open_ar: number | null; open_ap: number | null; pending_changes: number;
     recent: QbRecord[] } | null>(null);
 
@@ -382,6 +394,7 @@ export class PortalHomeComponent implements OnInit {
     this.portal.load();
     this.portal.dashboard().subscribe((d) => this.d.set(d));
     this.loadInsights();
+    this.insightsSvc.stock().subscribe({ next: (s) => this.stock.set(s), error: () => this.stock.set(null) });
   }
 
   setMonths(m: number) { this.months.set(m); this.loadInsights(); }

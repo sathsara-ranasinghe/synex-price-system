@@ -143,6 +143,38 @@ def change_password(body: PasswordChange, user: User = Depends(get_current_user)
     db.commit()
 
 
+# ---------------------------------------------------------------- personal preferences
+
+PREF_KEYS = {"columns", "views", "daily_summary"}
+
+
+@router.get("/auth/prefs")
+def get_prefs(user: User = Depends(get_current_user)):
+    p = user.prefs or {}
+    return {"columns": p.get("columns") or {}, "views": p.get("views") or {}, "daily_summary": p.get("daily_summary", True)}
+
+
+@router.put("/auth/prefs")
+def put_prefs(body: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Merge list columns {entity: [paths]}, saved views {entity: [{name, params}]} and daily_summary on/off."""
+    unknown = set(body) - PREF_KEYS
+    if unknown:
+        raise HTTPException(422, f"Unknown preference: {', '.join(sorted(unknown))}")
+    if "columns" in body and not (isinstance(body["columns"], dict)
+                                  and all(isinstance(v, list) and len(v) <= 60 for v in body["columns"].values())):
+        raise HTTPException(422, "columns must be {entity: [field paths]}")
+    if "views" in body and not (isinstance(body["views"], dict)
+                                and all(isinstance(v, list) and len(v) <= 30 for v in body["views"].values())):
+        raise HTTPException(422, "views must be {entity: [up to 30 views]}")
+    if "daily_summary" in body and not isinstance(body["daily_summary"], bool):
+        raise HTTPException(422, "daily_summary must be true or false")
+    if len(str(body)) > 50_000:
+        raise HTTPException(413, "Preferences too large")
+    user.prefs = {**(user.prefs or {}), **body}
+    db.commit()
+    return get_prefs(user)
+
+
 # ---------------------------------------------------------------- two-factor setup (own account)
 
 class CodeIn(BaseModel):
@@ -272,7 +304,7 @@ def update_user(user_id: int, body: UserUpdate, db: Session = Depends(get_db),
         setattr(u, k, v)
     new = audit.snapshot(u)
     for d in (old, new):
-        for k in ("password_hash", "totp_secret", "recovery_codes"):
+        for k in ("password_hash", "totp_secret", "recovery_codes", "prefs"):
             d.pop(k, None)
     audit.log(db, actor.user_id, "user", u.user_id, "update", old, new)
     db.commit()

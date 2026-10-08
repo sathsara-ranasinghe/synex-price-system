@@ -8,7 +8,9 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..deps import get_company, get_current_user
-from ..models import Company, QBWrite, User
+from ..models import Company, QBRecord, QBWrite, User
+from ..qb import builder
+from ..qb.registry import BY_KEY
 from ..services import audit
 
 router = APIRouter(prefix="/api", tags=["QuickBooks changes"])
@@ -71,6 +73,79 @@ def _get(db: Session, write_id: int, user: User, co: Company, *statuses: str) ->
     if w.status not in statuses:
         raise HTTPException(409, f"Change is {w.status}")
     return w
+
+
+def _show(v) -> str:
+    if v is None or v == "":
+        return ""
+    if isinstance(v, dict):
+        if "ListID" in v or "FullName" in v:
+            return str(v.get("FullName") or v.get("ListID"))
+        return ", ".join(str(x) for x in v.values() if x)  # addresses
+    if isinstance(v, bool) or v in ("true", "false"):
+        return "Yes" if v in (True, "true") else "No"
+    return str(v)
+
+
+def _line_text(ent, ln: dict) -> str:
+    lt = next((t for t in ent.lines if t.key == ln.get("type")), None)
+    vals = ln.get("values") or {}
+    parts = [f"{f.label}: {_show(vals.get(f.path))}" for f in (lt.fields if lt else []) if _show(vals.get(f.path))]
+    return " · ".join(parts)
+
+
+@router.get("/qb-writes/{write_id}/diff")
+def diff(write_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user), co: Company = Depends(get_company)):
+    """Before / after of a change, field by field, so approvers see exactly what will change in QuickBooks."""
+    w = db.get(QBWrite, write_id)
+    if not w or w.company_id != co.company_id or not _can_see(user, w):
+        raise HTTPException(404, "Not found")
+    ent = BY_KEY.get((w.payload or {}).get("entity"))
+    if not ent:
+        return {"fields": [], "lines_old": [], "lines_new": [], "record": None}
+    rec = db.get(QBRecord, w.entity_id) if w.kind in ("qb_mod", "qb_delete", "qb_void") and w.entity_id else None
+    old = builder.to_form(ent, rec.data or {}) if rec and rec.company_id == co.company_id else {"values": {}, "lines": []}
+    new_vals = (w.payload or {}).get("values") or {}
+    fields = []
+    for f in ent.fields:
+        o, n = _show(old["values"].get(f.path)), _show(new_vals.get(f.path)) if f.path in new_vals else None
+        if w.kind == "qb_add" and n:
+            fields.append({"label": f.label, "old": None, "new": n})
+        elif w.kind == "qb_mod" and n is not None and n != o:
+            fields.append({"label": f.label, "old": o or None, "new": n or None})
+        elif w.kind in ("qb_delete", "qb_void") and o:
+            fields.append({"label": f.label, "old": o, "new": None})
+    new_lines = (w.payload or {}).get("lines")
+    return {
+        "kind": w.kind, "entity": ent.key, "label": ent.label,
+        "record": {"record_id": rec.record_id, "name": rec.name, "amount": float(rec.amount) if rec.amount is not None else None}
+        if rec else None,
+        "fields": fields,
+        "lines_old": [_line_text(ent, ln) for ln in old["lines"]] if (w.kind != "qb_add" and new_lines is not None)
+        or w.kind in ("qb_delete", "qb_void") else [],
+        "lines_new": [_line_text(ent, ln) for ln in (new_lines or [])],
+    }
+
+
+class Many(BaseModel):
+    ids: list[int]
+
+
+@router.post("/qb-writes/approve-many")
+def approve_many(body: Many, db: Session = Depends(get_db), user: User = Depends(get_current_user),
+                 co: Company = Depends(get_company)):
+    done, skipped = [], []
+    for wid in body.ids[:200]:
+        try:
+            w = _get(db, wid, user, co, "pending")
+        except HTTPException as e:
+            skipped.append({"write_id": wid, "reason": e.detail})
+            continue
+        w.status, w.approved_by, w.approved_at = "approved", user.user_id, datetime.now(timezone.utc)
+        audit.log(db, user.user_id, "qb_write", w.write_id, "approve", None, {"kind": w.kind, "bulk": True})
+        done.append(wid)
+    db.commit()
+    return {"approved": done, "skipped": skipped}
 
 
 @router.post("/qb-writes/{write_id}/approve", response_model=QBWriteOut)

@@ -1,21 +1,26 @@
 import { DatePipe } from '@angular/common';
-import { Component, computed, effect, inject, input, signal } from '@angular/core';
+import { Component, HostListener, OnDestroy, computed, effect, inject, input, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatSnackBar } from '@angular/material/snack-bar';
+import { MatTooltipModule } from '@angular/material/tooltip';
 import { Router, RouterLink } from '@angular/router';
 import { errorText } from '../core/auth';
-import { EntityMeta, LineMeta, QbLine, QbRecordDetail } from '../core/models';
+import { CompanyService } from '../core/company.service';
+import { ActivityEvent, InsightsService, Lookup } from '../core/insights.service';
+import { EntityMeta, FieldMeta, LineMeta, QbLine, QbRecordDetail } from '../core/models';
 import { Attachment, PortalService, WriteResult, openBlob } from '../core/portal.service';
 import { QbFieldComponent } from '../shared/qb-field.component';
 import { UiService } from '../core/ui.service';
+import { PartyOverviewComponent } from '../shared/party-overview.component';
 import { MoneyPipe } from '../shared/shared';
 
 @Component({
   selector: 'app-qb-record',
   standalone: true,
-  imports: [DatePipe, FormsModule, RouterLink, MatButtonModule, MatIconModule, QbFieldComponent, MoneyPipe],
+  imports: [DatePipe, FormsModule, RouterLink, MatButtonModule, MatIconModule, MatTooltipModule, QbFieldComponent, MoneyPipe,
+    PartyOverviewComponent],
   template: `
     @if (ent(); as e) {
       <a [routerLink]="['/qb', e.key]" class="back"><mat-icon>arrow_back</mat-icon> {{ e.plural }}</a>
@@ -47,6 +52,24 @@ import { MoneyPipe } from '../shared/shared';
         }
       </div>
 
+      @if (!isNew() && detail() && (e.key === 'customer' || e.key === 'vendor')) {
+        <app-party-overview [entity]="e.key" [recordId]="detail()!.record.record_id" [listId]="detail()!.record.qb_id"
+                            [name]="detail()!.record.name" [canCreatePayment]="canCreate(e.key === 'customer' ? 'receive_payment' : 'bill_payment')" />
+      }
+      @if (draftRestored()) {
+        <div class="notice draft"><mat-icon>restore</mat-icon> Your unsaved draft from {{ draftRestored() | date: 'short' }} was restored.
+          <span class="spacer"></span><button mat-button (click)="discardDraft()">Discard draft</button></div>
+      }
+      @if (partyInfo(); as pi) {
+        @if (pi.balance || pi.credit_limit) {
+          <div class="notice" [class.warn]="overLimit()">
+            <mat-icon>{{ overLimit() ? 'warning' : 'account_balance_wallet' }}</mat-icon>
+            {{ pi.name }}: balance {{ pi.balance | money }}
+            @if (pi.credit_limit) { · credit limit {{ pi.credit_limit | money }}
+              @if (overLimit()) { <strong>&nbsp;- over the limit</strong> } }
+          </div>
+        }
+      }
       @if (detail()?.pending_changes) {
         <div class="notice"><mat-icon>schedule</mat-icon> This record has changes waiting to be written to QuickBooks.</div>
       }
@@ -59,7 +82,7 @@ import { MoneyPipe } from '../shared/shared';
       <section class="panel">
         <div class="grid">
           @for (f of headerFields(); track f.path) {
-            <qb-field [field]="f" [(value)]="values[f.path]" [disabled]="!editable() || (!isNew() && !f.mod)" (valueChange)="dirty = true; recalc()" />
+            <qb-field [field]="f" [(value)]="values[f.path]" [disabled]="!editable() || (!isNew() && !f.mod)" (valueChange)="dirty = true; recalc(); onHeader(f)" />
           }
         </div>
       </section>
@@ -79,7 +102,10 @@ import { MoneyPipe } from '../shared/shared';
                   @for (f of lt.fields; track f.path) {
                     <td class="cell" [class.wide]="f.type === 'ref' || f.type === 'txnref' || f.path === 'Desc'">
                       <qb-field [field]="f" [(value)]="ln.values[f.path]" [compact]="true" [disabled]="!linesEditable(lt)"
-                                [partyId]="partyId()" (valueChange)="linesDirty = true; recalc()" />
+                                [partyId]="partyId()" (valueChange)="linesDirty = true; recalc(); onLine(ln, f)" />
+                      @if (f.path === 'ItemRef' && stockOf(ln); as st) {
+                        <div class="stock" [class.low]="st.low" [matTooltip]="st.tip">{{ st.text }}</div>
+                      }
                     </td>
                   }
                   @if (lt.amount) { <td class="num">{{ lineTotal(lt, ln) | money }}</td> }
@@ -105,7 +131,8 @@ import { MoneyPipe } from '../shared/shared';
           <button mat-flat-button color="primary" [disabled]="busy()" (click)="save()">
             {{ e.permissions.direct ? 'Save to QuickBooks' : 'Submit for approval' }}</button>
         </div>
-        <p class="muted small right">Saved changes reach QuickBooks on the next Web Connector sync (a few minutes).</p>
+        <p class="muted small right">Saved changes reach QuickBooks on the next Web Connector sync (a few minutes).
+          <kbd>Ctrl</kbd>+<kbd>S</kbd> saves.</p>
       }
 
       @if (customFields().length) {
@@ -135,6 +162,25 @@ import { MoneyPipe } from '../shared/shared';
               <button mat-icon-button (click)="removeAttachment(a)" aria-label="Delete attachment"><mat-icon>delete</mat-icon></button>
             </div>
           } @empty { <p class="muted small">No files. Attachments are stored by the portal, not in QuickBooks.</p> }
+        </section>
+      }
+
+      @if (!isNew() && activity().length) {
+        <section class="panel">
+          <h2>Activity</h2>
+          <ol class="timeline">
+            @for (a of activity(); track $index) {
+              <li [class]="a.kind">
+                <span class="dot"><mat-icon>{{ activityIcon(a.kind) }}</mat-icon></span>
+                <div><strong>{{ a.text }}</strong>
+                  @if (a.status !== 'done') { <span class="tag" [class.bad]="a.status === 'failed' || a.status === 'rejected'"
+                    [class.warn]="a.status === 'pending'">{{ a.status === 'approved' ? 'queued' : a.status }}</span> }
+                  <div class="muted small">{{ a.who ? a.who + ' · ' : '' }}{{ a.at | date: 'medium' }}</div>
+                  @if (a.error) { <div class="err small">{{ a.error }}</div> }
+                </div>
+              </li>
+            }
+          </ol>
         </section>
       }
 
@@ -171,17 +217,42 @@ import { MoneyPipe } from '../shared/shared';
     .att { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-top: 1px solid var(--line); }
     .att a { cursor: pointer; font-weight: 500; } .att mat-icon { color: var(--muted); }
     .spacer { flex: 1; }
+    .notice.warn { background: var(--warn-soft); color: var(--warn); }
+    .notice.draft { background: var(--ok-soft); }
+    .stock { font-size: 11.5px; color: var(--ok); margin: -2px 0 2px 4px; } .stock.low { color: var(--danger); font-weight: 600; }
+    kbd { font: 11px/1 Inter, system-ui, sans-serif; padding: 2px 5px; border-radius: 4px; border: 1px solid var(--line-strong);
+      border-bottom-width: 2px; background: var(--surface-2); }
+    .timeline { list-style: none; margin: 0; padding: 0; }
+    .timeline li { position: relative; display: flex; gap: 12px; padding: 0 0 16px; }
+    .timeline li:not(:last-child)::before { content: ''; position: absolute; left: 13px; top: 28px; bottom: 0; width: 2px; background: var(--line); }
+    .timeline .dot { width: 28px; height: 28px; flex: none; border-radius: 50%; display: grid; place-items: center;
+      background: var(--primary-soft); color: var(--primary); }
+    .timeline .dot mat-icon { font-size: 16px; width: 16px; height: 16px; }
+    .timeline li.qb .dot { background: var(--surface-2); color: var(--muted); }
+    .timeline li.email .dot { background: var(--ok-soft); color: var(--ok); }
+    .timeline strong { font-weight: 550; font-size: 13.5px; } .err { color: var(--danger); }
   `],
 })
-export class QbRecordComponent {
+export class QbRecordComponent implements OnDestroy {
   entity = input.required<string>();
   id = input.required<string>();
   private portal = inject(PortalService);
   private ui = inject(UiService);
   private snack = inject(MatSnackBar);
   private router = inject(Router);
+  private insights = inject(InsightsService);
+  private companies = inject(CompanyService);
 
   ent = signal<EntityMeta | null>(null);
+  activity = signal<ActivityEvent[]>([]);
+  partyInfo = signal<Lookup | null>(null);
+  draftRestored = signal<number | null>(null);
+  overLimit = computed(() => {
+    const p = this.partyInfo();
+    return !!p?.credit_limit && (p.balance ?? 0) > p.credit_limit;
+  });
+  private stock = new WeakMap<object, Lookup>();
+  private draftTimer?: ReturnType<typeof setTimeout>;
   detail = signal<QbRecordDetail | null>(null);
   lines = signal<QbLine[]>([]);
   busy = signal(false);
@@ -228,11 +299,15 @@ export class QbRecordComponent {
           for (const f of e?.fields ?? []) if (f.type === 'bool' && f.required) this.values[f.path] = true;
           if (e?.fields.some((f) => f.path === 'TxnDate')) this.values['TxnDate'] = new Date().toISOString().slice(0, 10);
           this.lines.set(e?.lines.length ? [{ type: e.lines[e.lines.length - 1].key, values: {} }] : []);
+          this.partyInfo.set(null);
+          this.draftRestored.set(null);
           const copy = (history.state as any)?.copy as { values: Record<string, any>; lines: QbLine[] } | undefined;
           if (copy) {
             this.values = { ...this.values, ...copy.values };
             this.lines.set(copy.lines);
             this.linesDirty = true;
+          } else {
+            this.restoreDraft();
           }
         } else {
           this.portal.get(key, Number(id)).subscribe((d) => {
@@ -242,10 +317,120 @@ export class QbRecordComponent {
             this.values = structuredClone(d.form.values);
             this.lines.set(structuredClone(d.form.lines));
             this.portal.attachments(key, Number(id)).subscribe((a) => this.attachments.set(a));
+            this.insights.activity(key, Number(id)).subscribe({ next: (a) => this.activity.set(a), error: () => this.activity.set([]) });
           });
         }
       });
     }, { allowSignalWrites: true });
+  }
+
+  ngOnDestroy() { clearTimeout(this.draftTimer); }
+
+  // ---------------------------------------------------------------- keyboard
+  @HostListener('document:keydown', ['$event'])
+  keys(e: KeyboardEvent) {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      if (this.editable() && !this.busy()) this.save();
+    }
+  }
+
+  // ---------------------------------------------------------------- smart form
+  private isPurchase() { return this.ent()?.module === 'purchasing' || this.ent()?.module === 'banking'; }
+  private lineHas(path: string) { return !!this.ent()?.lines.some((lt) => lt.fields.some((x) => x.path === path)); }
+
+  /** Picking a customer / vendor fills terms and addresses and shows the balance. */
+  onHeader(f: FieldMeta) {
+    this.saveDraftSoon();
+    if (!['CustomerRef', 'VendorRef', 'PayeeEntityRef'].includes(f.path)) return;
+    const ref = this.values[f.path];
+    if (!ref?.ListID) { this.partyInfo.set(null); return; }
+    this.insights.lookup(f.ref ?? 'customer', ref.ListID).subscribe({
+      next: (p) => {
+        this.partyInfo.set(p);
+        if (!this.isNew()) return;
+        const fields = new Set((this.ent()?.fields ?? []).map((x) => x.path));
+        const fill = (path: string, v: unknown) => {
+          if (v && fields.has(path) && (this.values[path] === undefined || this.values[path] === null || this.values[path] === '')) {
+            this.values[path] = v;
+          }
+        };
+        fill('TermsRef', p.terms);
+        fill('BillAddress', p.bill_address);
+        fill('VendorAddress', p.bill_address);
+        fill('ShipAddress', p.ship_address);
+        this.recalc();
+      },
+      error: () => this.partyInfo.set(null),
+    });
+  }
+
+  /** Picking an item fills description and price / cost and shows the stock on hand. */
+  onLine(ln: QbLine, f: FieldMeta) {
+    this.saveDraftSoon();
+    if (f.path !== 'ItemRef') return;
+    const ref = ln.values['ItemRef'] as { ListID?: string } | undefined;
+    if (!ref?.ListID) return;
+    this.insights.lookup('item', ref.ListID!).subscribe((it) => {
+      this.stock.set(ln, it);
+      const empty = (k: string) => ln.values[k] === undefined || ln.values[k] === null || ln.values[k] === '';
+      const purchase = this.isPurchase();
+      if (empty('Desc')) {
+        const d = (purchase ? it.purchase_desc : it.sales_desc) ?? it.sales_desc;
+        if (d) ln.values['Desc'] = d;
+      }
+      const price = purchase ? it.cost : it.sales_price;
+      if (this.lineHas('Rate') && empty('Rate') && price !== null && price !== undefined) ln.values['Rate'] = price;
+      if (this.lineHas('Cost') && empty('Cost') && it.cost !== null && it.cost !== undefined) ln.values['Cost'] = it.cost;
+      if (this.lineHas('Quantity') && empty('Quantity')) ln.values['Quantity'] = 1;
+      this.lines.update((l) => [...l]);
+      this.recalc();
+    });
+  }
+
+  stockOf(ln: QbLine): { text: string; low: boolean; tip: string } | null {
+    this.tick();
+    const it = this.stock.get(ln);
+    if (!it || it.qoh === null || it.qoh === undefined) return null;
+    const want = Number(ln.values['Quantity']) || 0;
+    const low = !this.isPurchase() && (it.qoh <= 0 || want > it.qoh);
+    return { text: `In stock: ${it.qoh}`, low,
+      tip: low ? 'Not enough stock for this quantity' : it.reorder_point ? `Reorder point ${it.reorder_point}` : 'Quantity on hand in QuickBooks' };
+  }
+
+  // ---------------------------------------------------------------- drafts (new records only, kept in this browser)
+  private draftKey() { return `synex_draft_${this.companies.current()?.company_id}_${this.entity()}`; }
+
+  private saveDraftSoon() {
+    if (!this.isNew()) return;
+    clearTimeout(this.draftTimer);
+    this.draftTimer = setTimeout(() => {
+      try { localStorage.setItem(this.draftKey(), JSON.stringify({ at: Date.now(), values: this.values, lines: this.lines() })); }
+      catch { /* storage full or blocked */ }
+    }, 800);
+  }
+
+  private restoreDraft() {
+    try {
+      const d = JSON.parse(localStorage.getItem(this.draftKey()) ?? 'null');
+      if (!d || Date.now() - d.at > 14 * 86400_000) return;
+      this.values = { ...this.values, ...d.values };
+      if (Array.isArray(d.lines) && d.lines.length) { this.lines.set(d.lines); this.linesDirty = true; }
+      this.draftRestored.set(d.at);
+    } catch { /* ignore broken drafts */ }
+  }
+
+  discardDraft() {
+    this.clearDraft();
+    this.draftRestored.set(null);
+    this.router.navigateByUrl('/', { skipLocationChange: true }).then(() => this.router.navigate(['/qb', this.entity(), 'new']));
+  }
+
+  private clearDraft() { clearTimeout(this.draftTimer); try { localStorage.removeItem(this.draftKey()); } catch { /* ignore */ } }
+
+  activityIcon(kind: string) {
+    return ({ qb_add: 'add_circle', qb_mod: 'edit', qb_delete: 'delete', qb_void: 'block', email: 'mail', attachment: 'attach_file',
+      qb: 'sync' } as Record<string, string>)[kind] ?? 'history';
   }
 
   linesOf(type: string) { return this.lines().filter((l) => l.type === type); }
@@ -261,8 +446,8 @@ export class QbRecordComponent {
     return Number(ln.values[lt.amount]) || 0;
   }
 
-  addLine(lt: LineMeta) { this.lines.update((l) => [...l, { type: lt.key, values: {} }]); this.linesDirty = true; }
-  removeLine(ln: QbLine) { this.lines.update((l) => l.filter((x) => x !== ln)); this.linesDirty = true; this.recalc(); }
+  addLine(lt: LineMeta) { this.lines.update((l) => [...l, { type: lt.key, values: {} }]); this.linesDirty = true; this.saveDraftSoon(); }
+  removeLine(ln: QbLine) { this.lines.update((l) => l.filter((x) => x !== ln)); this.linesDirty = true; this.recalc(); this.saveDraftSoon(); }
 
   private clean(): Record<string, unknown> {
     const out: Record<string, unknown> = {};
@@ -270,7 +455,26 @@ export class QbRecordComponent {
     return out;
   }
 
+  /** New transactions: warn first when one with the same number, or same name + amount, already exists. */
   save() {
+    const e = this.ent()!;
+    if (!(this.isNew() && e.kind === 'txn')) { this.doSave(); return; }
+    this.busy.set(true);
+    this.insights.duplicates(e.key, { ref: this.values['RefNumber'], party_id: this.partyId(), amount: this.totalAll() || undefined,
+      txn_date: this.values['TxnDate'] }).subscribe({
+      next: (d) => {
+        this.busy.set(false);
+        if (d.length) {
+          const list = d.map((x) => `- ${x.name ?? '(no number)'} | ${x.party_name ?? ''} | ${x.txn_date ?? ''} | ${x.amount} (${x.reason})`).join('\n');
+          if (!confirm(`This ${e.label.toLowerCase()} may already exist:\n\n${list}\n\nSave it anyway?`)) return;
+        }
+        this.doSave();
+      },
+      error: () => { this.busy.set(false); this.doSave(); },
+    });
+  }
+
+  private doSave() {
     const e = this.ent()!;
     const lines = this.lines().filter((l) => Object.values(l.values).some((v) => v !== null && v !== undefined && v !== ''));
     this.busy.set(true);
@@ -278,7 +482,7 @@ export class QbRecordComponent {
       ? this.portal.create(e.key, this.clean(), e.lines.length ? lines : null)
       : this.portal.update(e.key, this.detail()!.record.record_id, this.clean(), this.linesDirty ? lines : null);
     req.subscribe({
-      next: (r) => this.done(r, true),
+      next: (r) => { if (this.isNew()) this.clearDraft(); this.done(r, true); },
       error: (err) => { this.snack.open(errorText(err), 'OK'); this.busy.set(false); },
     });
   }

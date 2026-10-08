@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     smtp_password: str = ""
     smtp_from: str = "prices@synex.local"
 
+    # daily summary e-mail (users with "receive alerts" on); hour of day in DIGEST_TZ, -1 = off
+    digest_hour: int = 7
+    digest_tz: str = "Asia/Colombo"
+
 
 @lru_cache
 def get_settings() -> Settings:

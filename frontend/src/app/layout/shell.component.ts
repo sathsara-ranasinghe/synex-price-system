@@ -8,7 +8,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatMenuModule } from '@angular/material/menu';
 import { MatSidenavModule } from '@angular/material/sidenav';
 import { MatTooltipModule } from '@angular/material/tooltip';
-import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import { Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { catchError, map, of } from 'rxjs';
 import { ApiService } from '../core/api.service';
 import { AuthService, PERM } from '../core/auth';
@@ -16,6 +16,7 @@ import { SyncStatus } from '../core/models';
 import { CompanyService } from '../core/company.service';
 import { PortalService } from '../core/portal.service';
 import { Theme, UiService } from '../core/ui.service';
+import { InsightsService } from '../core/insights.service';
 import { CommandPaletteComponent, PaletteLink } from './command-palette.component';
 
 interface NavLink { path: string; label: string; perm?: string; exact?: boolean }
@@ -110,6 +111,7 @@ const MODULE_ICONS: Record<string, string> = {
     <mat-menu #userMenu="matMenu" xPosition="after" yPosition="above">
       <div class="menu-head">{{ auth.me()?.email }}</div>
       <a mat-menu-item routerLink="/account"><mat-icon>manage_accounts</mat-icon>Account &amp; security</a>
+      <button mat-menu-item (click)="help.set(true)"><mat-icon>keyboard</mat-icon>Keyboard shortcuts</button>
       <button mat-menu-item [matMenuTriggerFor]="themeMenu"><mat-icon>{{ themeIcon() }}</mat-icon>Appearance</button>
       <button mat-menu-item (click)="auth.logout()"><mat-icon>logout</mat-icon>Sign out</button>
     </mat-menu>
@@ -123,6 +125,20 @@ const MODULE_ICONS: Record<string, string> = {
     </mat-menu>
 
     @if (ui.paletteOpen()) { <app-command-palette [links]="paletteLinks()" [newLinks]="newLinks()" /> }
+    @if (help()) {
+      <div class="help-wrap" (click)="help.set(false)">
+        <div class="help" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" (click)="$event.stopPropagation()">
+          <div class="help-head"><h2>Keyboard shortcuts</h2>
+            <button mat-icon-button (click)="help.set(false)" aria-label="Close"><mat-icon>close</mat-icon></button></div>
+          @for (g of shortcuts; track g.title) {
+            <h3>{{ g.title }}</h3>
+            @for (k of g.keys; track k.label) {
+              <div class="sc"><span>{{ k.label }}</span><span>@for (x of k.keys; track $index) { <kbd>{{ x }}</kbd> }</span></div>
+            }
+          }
+        </div>
+      </div>
+    }
   `,
   styles: [`
     .container { height: 100vh; background: var(--bg); }
@@ -188,6 +204,13 @@ const MODULE_ICONS: Record<string, string> = {
     .tick { margin-left: auto; margin-right: 0 !important; color: var(--primary) !important; }
     @media (max-width: 600px) { .sync-txt { display: none; } .sync { padding: 0 11px; } }
     @media (max-width: 900px) { .find { min-width: 0; } .find-txt, .keys { display: none; } }
+    .help-wrap { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 16px; background: rgba(8, 12, 22, .45); }
+    .help { width: 100%; max-width: 480px; max-height: 85vh; overflow-y: auto; padding: 18px 22px; background: var(--surface);
+      border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow-lg); }
+    .help-head { display: flex; align-items: center; justify-content: space-between; } .help-head h2 { margin: 0; }
+    .help h3 { margin: 14px 0 6px; color: var(--muted); text-transform: uppercase; font-size: 11.5px; letter-spacing: .05em; }
+    .sc { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; font-size: 13.5px; }
+    .sc span:last-child { display: inline-flex; gap: 4px; }
     .menu-head { padding: 10px 16px 6px; color: var(--muted); font-size: 12.5px; }
     .company { display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 10px 0 6px; border-radius: 10px;
       border: 1px solid var(--line); background: var(--surface); color: var(--text); font: inherit; cursor: pointer; }
@@ -208,6 +231,8 @@ export class ShellComponent implements OnInit, OnDestroy {
   private portal = inject(PortalService);
   companies = inject(CompanyService);
   ui = inject(UiService);
+  private router = inject(Router);
+  private insights = inject(InsightsService);
   themes: { key: Theme; label: string; icon: string }[] = [
     { key: 'auto', label: 'Match my computer', icon: 'brightness_auto' },
     { key: 'light', label: 'Light', icon: 'light_mode' },
@@ -244,6 +269,8 @@ export class ShellComponent implements OnInit, OnDestroy {
         links: ents.map((e) => ({ path: `/qb/${e.key}`, label: e.plural })) });
     }
     const qb: NavLink[] = [
+      { path: '/aging', label: 'Aging (who owes what)', perm: perms.has('sales.view') ? 'sales.view' : 'purchasing.view' },
+      { path: '/stock-alerts', label: 'Items to reorder', perm: perms.has('inventory.view') ? 'inventory.view' : 'lists.view' },
       { path: '/qb-reports', label: 'Reports', perm: 'reports.view' },
       { path: '/qb-changes', label: 'Changes & approvals' },
       { path: '/sync', label: 'Sync status', perm: PERM.sync },
@@ -277,19 +304,47 @@ export class ShellComponent implements OnInit, OnDestroy {
     .map((e) => ({ path: `/qb/${e.key}/new`, label: `New ${e.label.toLowerCase()}`, group: 'Create', icon: 'add',
       keywords: `add create ${e.plural}` })));
 
+  help = signal(false);
+  private gAt = 0;
+  private readonly goKeys: Record<string, string> = { h: '/', a: '/qb-changes', i: '/qb/invoice', c: '/qb/customer', b: '/qb/bill',
+    v: '/qb/vendor', r: '/qb-reports', o: '/aging', s: '/stock-alerts' };
+  shortcuts = [
+    { title: 'Anywhere', keys: [
+      { label: 'Search everything', keys: ['Ctrl', 'K'] }, { label: 'Search (quick)', keys: ['/'] },
+      { label: 'This help', keys: ['?'] }, { label: 'Close a window', keys: ['Esc'] }] },
+    { title: 'Go to (press G, then the letter)', keys: [
+      { label: 'Home', keys: ['G', 'H'] }, { label: 'Approvals', keys: ['G', 'A'] }, { label: 'Invoices', keys: ['G', 'I'] },
+      { label: 'Customers', keys: ['G', 'C'] }, { label: 'Bills', keys: ['G', 'B'] }, { label: 'Vendors', keys: ['G', 'V'] },
+      { label: 'Aging', keys: ['G', 'O'] }, { label: 'Items to reorder', keys: ['G', 'S'] }, { label: 'Reports', keys: ['G', 'R'] }] },
+    { title: 'Lists and forms', keys: [
+      { label: 'New record (in a list)', keys: ['N'] }, { label: 'Save the form', keys: ['Ctrl', 'S'] }] },
+  ];
+
   @HostListener('document:keydown', ['$event'])
   hotkey(e: KeyboardEvent) {
     const typing = (e.target as HTMLElement | null)?.closest?.('input, textarea, select, [contenteditable="true"]');
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
       e.preventDefault();
+      this.help.set(false);
       this.ui.paletteOpen.set(!this.ui.paletteOpen());
-    } else if (e.key === '/' && !typing && !this.ui.paletteOpen()) {
+      return;
+    }
+    if (typing || e.ctrlKey || e.metaKey || e.altKey || this.ui.paletteOpen()) return;
+    if (e.key === 'Escape' && this.help()) { this.help.set(false); return; }
+    if (e.key === '/') { e.preventDefault(); this.ui.paletteOpen.set(true); return; }
+    if (e.key === '?') { e.preventDefault(); this.help.set(!this.help()); return; }
+    const k = e.key.toLowerCase();
+    if (k === 'g') { this.gAt = Date.now(); return; }
+    if (Date.now() - this.gAt < 1200 && this.goKeys[k]) {
       e.preventDefault();
-      this.ui.paletteOpen.set(true);
+      this.gAt = 0;
+      this.help.set(false);
+      this.router.navigateByUrl(this.goKeys[k]);
     }
   }
 
   ngOnInit() {
+    this.insights.reset();
     this.companies.load().then(() => this.portal.load());
     const poll = () => {
       this.api.unreadCount().subscribe((r) => this.unread.set(r.count));

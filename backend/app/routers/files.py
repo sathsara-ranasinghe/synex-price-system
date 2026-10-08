@@ -88,8 +88,8 @@ def _num(v):
 
 @router.get("/export/{entity}")
 def export_list(entity: str, q: str | None = None, active: bool | None = True, date_from: date | None = None,
-                date_to: date | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user),
-                co: Company = Depends(get_company)):
+                date_to: date | None = None, ids: list[int] | None = Query(None), db: Session = Depends(get_db),
+                user: User = Depends(get_current_user), co: Company = Depends(get_company)):
     ent = _entity(entity, user)
     query = db.query(QBRecord).filter(QBRecord.company_id == co.company_id, QBRecord.entity == ent.key,
                                       QBRecord.deleted.is_(False))
@@ -102,6 +102,8 @@ def export_list(entity: str, q: str | None = None, active: bool | None = True, d
         query = query.filter(QBRecord.txn_date >= date_from)
     if date_to:
         query = query.filter(QBRecord.txn_date <= date_to)
+    if ids:  # only the rows ticked in the list
+        query = query.filter(QBRecord.record_id.in_(ids[:5000]))
     order = (QBRecord.txn_date.desc().nullslast(),) if ent.kind == "txn" else (QBRecord.name,)
     fields = [f for f in ent.fields if f.type not in ("address",)]
     header = (["No.", "Date", "Name", "Amount"] if ent.kind == "txn" else ["Name"]) + [f.label for f in fields]
@@ -275,9 +277,83 @@ def email(entity: str, record_id: int, body: EmailIn, db: Session = Depends(get_
                        attachment=(f"{_safe(title)}.pdf", build_pdf(co, ent, rec), "application/pdf"))
     except RuntimeError as e:
         raise HTTPException(400, str(e))
-    audit.log(db, user.user_id, "email", rec.record_id, "send", None, {"to": [str(t) for t in body.to], "doc": title})
+    audit.log(db, user.user_id, "email", rec.record_id, "send", None,
+              {"to": [str(t) for t in body.to], "doc": title, "company_id": co.company_id})
     db.commit()
     return {"message": f"Sent to {', '.join(str(t) for t in body.to)}"}
+
+
+class BulkIn(BaseModel):
+    entity: str
+    ids: list[int] = Field(min_length=1, max_length=100)
+    message: str | None = Field(default=None, max_length=5000)
+
+
+def _bulk_records(db: Session, body: BulkIn, user: User, co: Company) -> tuple[Entity, list[QBRecord]]:
+    ent = _entity(body.entity, user)
+    if ent.kind != "txn":
+        raise HTTPException(400, "Only transactions can be printed or e-mailed")
+    recs = db.query(QBRecord).filter(QBRecord.company_id == co.company_id, QBRecord.entity == ent.key,
+                                     QBRecord.record_id.in_(body.ids)).all()
+    if not recs:
+        raise HTTPException(404, "No records found")
+    return ent, recs
+
+
+@router.post("/bulk-pdf")
+def bulk_pdf(body: BulkIn, db: Session = Depends(get_db), user: User = Depends(get_current_user),
+             co: Company = Depends(get_company)):
+    """All ticked documents as PDFs in one ZIP file."""
+    import zipfile
+
+    ent, recs = _bulk_records(db, body, user, co)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        used = set()
+        for r in recs:
+            name = f"{_safe(ent.label)}_{_safe(r.name or str(r.record_id))}"
+            while name in used:
+                name += "_"
+            used.add(name)
+            z.writestr(f"{name}.pdf", build_pdf(co, ent, r))
+    audit.log(db, user.user_id, "export", ent.key, "bulk_pdf", None, {"count": len(recs), "company": co.name})
+    db.commit()
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="application/zip",
+                             headers={"Content-Disposition": f"attachment; filename={_safe(ent.plural)}.zip"})
+
+
+@router.post("/bulk-email")
+def bulk_email(body: BulkIn, db: Session = Depends(get_db), user: User = Depends(get_current_user),
+               co: Company = Depends(get_company)):
+    """E-mail each ticked document to its own customer / vendor (the e-mail address saved in QuickBooks)."""
+    ent, recs = _bulk_records(db, body, user, co)
+    party_ids = {r.party_id for r in recs if r.party_id}
+    emails = {p.qb_id: builder.get(p.data or {}, "Email") for p in db.query(QBRecord).filter(
+        QBRecord.company_id == co.company_id, QBRecord.qb_id.in_(party_ids),
+        QBRecord.entity.in_(("customer", "vendor", "other_name", "employee")))} if party_ids else {}
+    sent, skipped = [], []
+    for r in recs:
+        to = emails.get(r.party_id)
+        title = f"{TITLES.get(ent.key, ent.label)} {r.name or ''}".strip()
+        if not to:
+            skipped.append({"name": r.name, "party": r.party_name, "reason": "No e-mail address in QuickBooks"})
+            continue
+        recipients = [x.strip() for x in str(to).replace(";", ",").split(",") if x.strip()]
+        try:
+            send_email_now(recipients, f"{co.name}: {title.title()}",
+                           body.message or f"Please find attached {title.lower()} from {co.name}.",
+                           attachment=(f"{_safe(title)}.pdf", build_pdf(co, ent, r), "application/pdf"))
+        except RuntimeError as e:
+            skipped.append({"name": r.name, "party": r.party_name, "reason": str(e)})
+            if "not set up" in str(e):
+                break
+            continue
+        audit.log(db, user.user_id, "email", r.record_id, "send", None,
+                  {"to": recipients, "doc": title, "company_id": co.company_id, "bulk": True})
+        sent.append({"name": r.name, "to": recipients})
+    db.commit()
+    return {"sent": sent, "skipped": skipped}
 
 
 # ---------------------------------------------------------------- attachments (stored by the portal)
@@ -342,7 +418,8 @@ async def upload_attachment(entity: str, record_id: int, file: UploadFile = File
                    stored_as=os.path.join(str(co.company_id), stored), uploaded_by=user.user_id)
     db.add(a)
     db.flush()
-    audit.log(db, user.user_id, "attachment", a.attachment_id, "upload", None, {"file": name, "record": rec.name})
+    audit.log(db, user.user_id, "attachment", a.attachment_id, "upload", None,
+              {"file": name, "record": rec.name, "entity": rec.entity, "qb_id": rec.qb_id})
     db.commit()
     return _att_out(a)
 
@@ -373,6 +450,7 @@ def delete_attachment(attachment_id: int, db: Session = Depends(get_db), user: U
     path = os.path.join(get_settings().attachments_dir, a.stored_as)
     if os.path.isfile(path):
         os.remove(path)
-    audit.log(db, user.user_id, "attachment", a.attachment_id, "delete", {"file": a.filename}, None)
+    audit.log(db, user.user_id, "attachment", a.attachment_id, "delete",
+              {"file": a.filename, "entity": a.entity, "qb_id": a.qb_id}, None)
     db.delete(a)
     db.commit()

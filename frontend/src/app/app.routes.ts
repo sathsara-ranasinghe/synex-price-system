@@ -26,6 +26,8 @@ export const routes: Routes = [
         loadComponent: () => import('./pages/roles.component').then((m) => m.RolesComponent) },
       { path: 'audit', canActivate: [authGuard], data: { permission: PERM.audit },
         loadComponent: () => import('./pages/audit.component').then((m) => m.AuditComponent) },
+      { path: 'aging', loadComponent: () => import('./pages/aging.component').then((m) => m.AgingComponent) },
+      { path: 'stock-alerts', loadComponent: () => import('./pages/stock-alerts.component').then((m) => m.StockAlertsComponent) },
       { path: 'account', loadComponent: () => import('./pages/account.component').then((m) => m.AccountComponent) },
       { path: 'notifications', loadComponent: () => import('./pages/notifications.component').then((m) => m.NotificationsComponent) },
     ],

@@ -114,7 +114,8 @@ export class QbFieldComponent implements OnInit {
   });
 
   ngOnInit() {
-    this.search$.pipe(debounceTime(200), switchMap((q) => this.portal.options(this.field().ref!, q ?? '', this.partyId())))
+    this.search$.pipe(debounceTime(200), switchMap((q) => this.portal.options(this.field().ref!, q ?? '',
+      this.field().type === 'txnref' ? this.partyId() : null)))  // only bills / invoices are limited to the chosen party
       .subscribe((o) => this.options.set(o));
   }
 

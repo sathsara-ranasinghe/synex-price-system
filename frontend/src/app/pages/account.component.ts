@@ -1,5 +1,5 @@
 import { HttpClient } from '@angular/common/http';
-import { Component, inject, signal } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
@@ -8,6 +8,7 @@ import { MatInputModule } from '@angular/material/input';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { firstValueFrom } from 'rxjs';
 import { AuthService, errorText } from '../core/auth';
+import { InsightsService } from '../core/insights.service';
 
 @Component({
   selector: 'app-account',
@@ -73,6 +74,22 @@ import { AuthService, errorText } from '../core/auth';
         }
       </section>
 
+      <!-- daily summary -->
+      <section class="panel">
+        <div class="title"><span class="ic on"><mat-icon>mark_email_unread</mat-icon></span>
+          <div><h2>Daily summary e-mail</h2>
+            <span class="tag" [class.ok]="daily()" [class.warn]="!daily()">{{ daily() ? 'On' : 'Off' }}</span></div></div>
+        <p class="muted">Every morning: yesterday's sales and payments, what customers owe, bills due this week, items to reorder
+          and changes waiting for approval. Sent to {{ auth.me()?.email }}.</p>
+        <div class="row">
+          <button mat-stroked-button (click)="setDaily(!daily())" [disabled]="busy()">
+            <mat-icon>{{ daily() ? 'notifications_off' : 'notifications_active' }}</mat-icon> {{ daily() ? 'Turn off' : 'Turn on' }}</button>
+          <button mat-stroked-button (click)="preview()" [disabled]="busy()"><mat-icon>visibility</mat-icon> Preview</button>
+          <button mat-stroked-button (click)="sendNow()" [disabled]="busy()"><mat-icon>send</mat-icon> Send me one now</button>
+        </div>
+        @if (digest()) { <pre class="digest">{{ digest() }}</pre> }
+      </section>
+
       <!-- password -->
       <section class="panel">
         <div class="title"><span class="ic"><mat-icon>password</mat-icon></span><div><h2>Change password</h2></div></div>
@@ -106,12 +123,17 @@ import { AuthService, errorText } from '../core/auth';
     .codes button { margin-right: 8px; }
     .off { margin-top: 12px; } .off summary { cursor: pointer; color: var(--muted); font-size: 13.5px; }
     .small { font-size: 12.5px; } .err { color: var(--danger); }
+    .digest { white-space: pre-wrap; font: 12.5px/1.5 ui-monospace, Consolas, monospace; background: var(--surface-2);
+      border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin: 12px 0 0; max-height: 360px; overflow: auto; }
   `],
 })
 export class AccountComponent {
   auth = inject(AuthService);
   private http = inject(HttpClient);
   private snack = inject(MatSnackBar);
+  private insights = inject(InsightsService);
+  daily = computed(() => this.insights.prefs()?.daily_summary ?? true);
+  digest = signal<string | null>(null);
   setup = signal<{ secret: string; qr: string } | null>(null);
   codes = signal<string[] | null>(null);
   busy = signal(false);
@@ -121,6 +143,17 @@ export class AccountComponent {
   cur = '';
   next = '';
   next2 = '';
+
+  constructor() { this.insights.loadPrefs().catch(() => undefined); }
+
+  async setDaily(on: boolean) {
+    await this.run(() => firstValueFrom(this.insights.savePrefs({ daily_summary: on })), on ? 'Daily summary turned on' : 'Daily summary turned off');
+  }
+  async preview() {
+    const d = await this.run(() => firstValueFrom(this.insights.digest()));
+    if (d) this.digest.set(d.body);
+  }
+  async sendNow() { await this.run(() => firstValueFrom(this.insights.sendDigest()).then((r) => { this.snack.open(r.message, '', { duration: 3000 }); })); }
 
   group(secret: string) { return secret.replace(/(.{4})/g, '$1 ').trim(); }
 

@@ -1,7 +1,10 @@
 import { DatePipe, DecimalPipe } from '@angular/common';
-import { Component, computed, effect, inject, input, signal } from '@angular/core';
+import { Component, HostListener, computed, effect, inject, input, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
+import { MatCheckboxModule } from '@angular/material/checkbox';
+import { MatMenuModule } from '@angular/material/menu';
+import { MatSnackBar } from '@angular/material/snack-bar';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
@@ -13,7 +16,9 @@ import { Router, RouterLink } from '@angular/router';
 import { Subject, debounceTime } from 'rxjs';
 import { EntityMeta, FieldMeta, QbRecord } from '../core/models';
 import { ApiService } from '../core/api.service';
-import { PortalService } from '../core/portal.service';
+import { errorText } from '../core/auth';
+import { InsightsService, SavedView } from '../core/insights.service';
+import { PortalService, openBlob } from '../core/portal.service';
 import { HumanizePipe, MoneyPipe } from '../shared/shared';
 
 // shown in fixed columns already
@@ -34,7 +39,7 @@ const PRESETS: Preset[] = [
 @Component({
   selector: 'app-qb-list',
   standalone: true,
-  imports: [DatePipe, DecimalPipe, FormsModule, RouterLink, MatButtonModule, MatFormFieldModule, MatIconModule, MatInputModule,
+  imports: [DatePipe, DecimalPipe, FormsModule, RouterLink, MatButtonModule, MatCheckboxModule, MatMenuModule, MatFormFieldModule, MatIconModule, MatInputModule,
     MatPaginatorModule, MatProgressBarModule, MatSelectModule, MatTooltipModule, MoneyPipe, HumanizePipe],
   template: `
     @if (ent(); as e) {
@@ -44,6 +49,8 @@ const PRESETS: Preset[] = [
           <h1>{{ e.plural }} <span class="count">{{ total() | number }}</span></h1>
         </div>
         <span class="spacer"></span>
+        <button mat-stroked-button [matMenuTriggerFor]="viewMenu"><mat-icon>bookmarks</mat-icon> Views</button>
+        <button mat-stroked-button [matMenuTriggerFor]="colMenu"><mat-icon>view_column</mat-icon> Columns</button>
         <button mat-stroked-button (click)="exportExcel()" matTooltip="Download what you see as an Excel file">
           <mat-icon>table_view</mat-icon> Excel</button>
         @if (e.can_add && e.permissions.create) {
@@ -80,11 +87,46 @@ const PRESETS: Preset[] = [
         }
       </div>
 
+      <mat-menu #viewMenu="matMenu">
+        <div class="menu-title">Saved views</div>
+        @for (v of views(); track v.name) {
+          <div class="view-row">
+            <button mat-menu-item (click)="applyView(v)"><mat-icon>bookmark</mat-icon>{{ v.name }}</button>
+            <button mat-icon-button (click)="$event.stopPropagation(); deleteView(v)" [attr.aria-label]="'Delete view ' + v.name">
+              <mat-icon>close</mat-icon></button>
+          </div>
+        } @empty { <div class="menu-note">No saved views yet.</div> }
+        <button mat-menu-item (click)="saveView()"><mat-icon>bookmark_add</mat-icon>Save current filters as a view…</button>
+      </mat-menu>
+      <mat-menu #colMenu="matMenu" class="col-menu">
+        <div class="menu-title">Show columns</div>
+        @for (f of allCols(); track f.path) {
+          <div class="col-row" (click)="$event.stopPropagation()">
+            <mat-checkbox [checked]="isShown(f)" (change)="toggleCol(f, $event.checked)">{{ f.label }}</mat-checkbox></div>
+        }
+        <button mat-menu-item (click)="resetCols()"><mat-icon>restart_alt</mat-icon>Default columns</button>
+      </mat-menu>
+
+      @if (sel().size) {
+        <div class="selbar">
+          <strong>{{ sel().size }} selected</strong>
+          <button mat-stroked-button (click)="exportSelected()"><mat-icon>table_view</mat-icon> Excel</button>
+          @if (e.kind === 'txn') {
+            <button mat-stroked-button (click)="pdfSelected()" [disabled]="bulkBusy()"><mat-icon>picture_as_pdf</mat-icon> PDFs (zip)</button>
+            <button mat-stroked-button (click)="emailSelected()" [disabled]="bulkBusy()"><mat-icon>forward_to_inbox</mat-icon> E-mail each</button>
+          }
+          <span class="spacer"></span>
+          <button mat-button (click)="clearSel()">Clear</button>
+        </div>
+      }
+
       <div class="panel flush">
         <div class="bar">@if (loading() && rows().length) { <mat-progress-bar mode="indeterminate" /> }</div>
         <div class="scroll">
           <table class="simple">
             <thead><tr>
+              <th class="ck"><mat-checkbox [checked]="pageAllPicked()" [indeterminate]="pageSomePicked() && !pageAllPicked()"
+                (change)="pickPage($event.checked)" aria-label="Select all on this page" /></th>
               <th><button class="sort" (click)="sortBy('name')">{{ e.kind === 'txn' ? 'No.' : 'Name' }}<mat-icon>{{ arrow('name') }}</mat-icon></button></th>
               @if (e.kind === 'txn') {
                 <th><button class="sort" (click)="sortBy('txn_date')">Date<mat-icon>{{ arrow('txn_date') }}</mat-icon></button></th>
@@ -102,7 +144,9 @@ const PRESETS: Preset[] = [
                 }
               } @else {
                 @for (r of rows(); track r.record_id) {
-                  <tr class="clickable" (click)="open(r)">
+                  <tr class="clickable" [class.sel]="sel().has(r.record_id)" (click)="open(r)">
+                    <td class="ck" (click)="$event.stopPropagation()"><mat-checkbox [checked]="sel().has(r.record_id)"
+                      (change)="pick(r.record_id, $event.checked)" [attr.aria-label]="'Select ' + (r.name || 'row')" /></td>
                     <td><a [routerLink]="['/qb', e.key, r.record_id]" (click)="$event.stopPropagation()">{{ r.name || '(no number)' }}</a>
                       @if (!r.is_active) { <span class="tag">inactive</span> }</td>
                     @if (e.kind === 'txn') { <td class="nowrap">{{ r.txn_date | date: 'mediumDate' }}</td><td>{{ r.party_name }}</td> }
@@ -128,7 +172,7 @@ const PRESETS: Preset[] = [
             </tbody>
             @if (e.kind === 'txn' && sum() !== null && rows().length) {
               <tfoot><tr>
-                <td [attr.colspan]="3 + cols().length">Total of {{ total() | number }} {{ e.plural.toLowerCase() }}{{ filtered() ? ' (filtered)' : '' }}</td>
+                <td [attr.colspan]="4 + cols().length">Total of {{ total() | number }} {{ e.plural.toLowerCase() }}{{ filtered() ? ' (filtered)' : '' }}</td>
                 <td class="num">{{ sum() | money }}</td>
               </tr></tfoot>
             }
@@ -179,15 +223,31 @@ const PRESETS: Preset[] = [
       animation: shimmer 1.2s infinite; }
     @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
     .empty button { margin-top: 12px; }
+    .ck { width: 40px; padding-right: 0 !important; }
+    tr.sel td { background: var(--primary-soft); }
+    .selbar { position: sticky; top: 64px; z-index: 2; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 12px;
+      margin-bottom: 10px; border-radius: 10px; background: var(--surface); border: 1px solid color-mix(in srgb, var(--primary) 40%, var(--line));
+      box-shadow: var(--shadow); }
+    .menu-title { padding: 8px 16px 4px; font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+    .menu-note { padding: 4px 16px 8px; font-size: 13px; color: var(--muted); }
+    .view-row { display: flex; align-items: center; } .view-row button[mat-menu-item] { flex: 1; }
+    .col-row { padding: 0 8px; }
     @media (max-width: 700px) { .dates { width: 100%; } .dates input { flex: 1; } }
   `],
 })
 export class QbListComponent {
   entity = input.required<string>();
+  /** ?q= from links such as the aging page */
+  qParam = input<string | undefined>(undefined, { alias: 'q' });
   private portal = inject(PortalService);
   private router = inject(Router);
   private api = inject(ApiService);
+  private insights = inject(InsightsService);
+  private snack = inject(MatSnackBar);
   ent = signal<EntityMeta | null>(null);
+  sel = signal<Set<number>>(new Set());
+  bulkBusy = signal(false);
+
   rows = signal<QbRecord[]>([]);
   total = signal(0);
   sum = signal<number | null>(null);
@@ -195,7 +255,16 @@ export class QbListComponent {
   preset = signal<string | null>(null);
   sort = signal<{ key: SortKey; dir: 'asc' | 'desc' } | null>(null);
   typed$ = new Subject<void>();
-  cols = computed(() => (this.ent()?.fields ?? []).filter((f) => f.list && !FIXED.includes(f.path)));
+  /** Every column the user may show (addresses are too wide for a list). */
+  allCols = computed(() => (this.ent()?.fields ?? []).filter((f) => f.type !== 'address' && !FIXED.includes(f.path)));
+  cols = computed(() => {
+    const chosen = this.insights.prefs()?.columns?.[this.entity()];
+    const all = this.allCols();
+    return chosen ? all.filter((f) => chosen.includes(f.path)) : all.filter((f) => f.list);
+  });
+  views = computed<SavedView[]>(() => this.insights.prefs()?.views?.[this.entity()] ?? []);
+  pageAllPicked = computed(() => this.rows().length > 0 && this.rows().every((r) => this.sel().has(r.record_id)));
+  pageSomePicked = computed(() => this.rows().some((r) => this.sel().has(r.record_id)));
   moduleLabel = computed(() => this.portal.meta()?.modules.find((m) => m.key === this.ent()?.module)?.label ?? '');
   presets = PRESETS;
   statuses: { label: string; value: boolean | null }[] = [
@@ -210,16 +279,103 @@ export class QbListComponent {
   pageSize = 25;
 
   constructor() {
+    this.insights.loadPrefs().catch(() => undefined);
     this.typed$.pipe(debounceTime(300)).subscribe(() => this.reload(true));
     effect(() => {
       const key = this.entity();
       this.portal.load().then(() => {
         this.ent.set(this.portal.entity(key) ?? null);
-        this.q = ''; this.from = ''; this.to = ''; this.page = 1; this.active = true;
-        this.preset.set(null); this.sort.set(null); this.rows.set([]);
+        this.q = this.qParam() ?? ''; this.from = ''; this.to = ''; this.page = 1; this.active = true;
+        this.preset.set(null); this.sort.set(null); this.rows.set([]); this.sel.set(new Set());
         this.reload();
       });
     }, { allowSignalWrites: true });
+  }
+
+  // ---------------------------------------------------------------- columns & saved views (saved per user)
+  isShown(f: FieldMeta) { return this.cols().some((c) => c.path === f.path); }
+  toggleCol(f: FieldMeta, on: boolean) {
+    const now = this.cols().map((c) => c.path);
+    const next = on ? this.allCols().map((c) => c.path).filter((p) => p === f.path || now.includes(p)) : now.filter((p) => p !== f.path);
+    this.savePrefs({ columns: { ...(this.insights.prefs()?.columns ?? {}), [this.entity()]: next } });
+  }
+  resetCols() {
+    const cols = { ...(this.insights.prefs()?.columns ?? {}) };
+    delete cols[this.entity()];
+    this.savePrefs({ columns: cols });
+  }
+  saveView() {
+    const name = prompt('Name for this view (for example "Overdue this month")')?.trim();
+    if (!name) return;
+    const params = { q: this.q, active: this.active, from: this.from, to: this.to, preset: this.preset(), sort: this.sort() };
+    const list = [...this.views().filter((v) => v.name !== name), { name, params }];
+    this.savePrefs({ views: { ...(this.insights.prefs()?.views ?? {}), [this.entity()]: list } }, `View "${name}" saved`);
+  }
+  applyView(v: SavedView) {
+    const p = v.params as any;
+    this.q = p.q ?? ''; this.active = p.active ?? true; this.sort.set(p.sort ?? null);
+    const preset = PRESETS.find((x) => x.key === p.preset);
+    if (preset) { this.usePreset(preset); return; }  // relative ranges ("This month") move with time
+    this.from = p.from ?? ''; this.to = p.to ?? ''; this.preset.set(null);
+    this.reload(true);
+  }
+  deleteView(v: SavedView) {
+    this.savePrefs({ views: { ...(this.insights.prefs()?.views ?? {}), [this.entity()]: this.views().filter((x) => x.name !== v.name) } });
+  }
+  private savePrefs(patch: object, msg?: string) {
+    this.insights.savePrefs(patch).subscribe({
+      next: () => msg && this.snack.open(msg, '', { duration: 2500 }),
+      error: (e) => this.snack.open(errorText(e), 'OK'),
+    });
+  }
+
+  // ---------------------------------------------------------------- selection & bulk actions
+  pick(id: number, on: boolean) {
+    const s = new Set(this.sel());
+    if (on) s.add(id); else s.delete(id);
+    this.sel.set(s);
+  }
+  clearSel() { this.sel.set(new Set()); }
+  pickPage(on: boolean) {
+    const s = new Set(this.sel());
+    for (const r of this.rows()) if (on) s.add(r.record_id); else s.delete(r.record_id);
+    this.sel.set(s);
+  }
+  exportSelected() { this.api.download(`/files/export/${this.entity()}`, { ids: [...this.sel()], active: null }).subscribe(); }
+  pdfSelected() {
+    const ids = [...this.sel()];
+    if (ids.length > 100) { this.snack.open('Select up to 100 documents at a time', 'OK'); return; }
+    this.bulkBusy.set(true);
+    this.insights.bulkPdf(this.entity(), ids).subscribe({
+      next: (b) => { this.bulkBusy.set(false); openBlob(b, `${this.ent()?.plural ?? 'documents'}.zip`); },
+      error: (e) => { this.bulkBusy.set(false); this.snack.open(errorText(e), 'OK'); },
+    });
+  }
+  emailSelected() {
+    const ids = [...this.sel()];
+    if (ids.length > 100) { this.snack.open('Select up to 100 documents at a time', 'OK'); return; }
+    const party = this.ent()?.module === 'purchasing' ? 'vendor' : 'customer';
+    if (!confirm(`E-mail ${ids.length} documents? Each one goes to its own ${party}'s e-mail address saved in QuickBooks.`)) return;
+    this.bulkBusy.set(true);
+    this.insights.bulkEmail(this.entity(), ids, null).subscribe({
+      next: (r) => {
+        this.bulkBusy.set(false);
+        const skipped = r.skipped.length ? ` · ${r.skipped.length} skipped (${[...new Set(r.skipped.map((x) => x.reason))].join('; ')})` : '';
+        this.snack.open(`Sent ${r.sent.length}${skipped}`, 'OK', { duration: 8000 });
+      },
+      error: (e) => { this.bulkBusy.set(false); this.snack.open(errorText(e), 'OK'); },
+    });
+  }
+
+  /** N = new record (when not typing in a field). */
+  @HostListener('document:keydown', ['$event'])
+  keys(ev: KeyboardEvent) {
+    const typing = (ev.target as HTMLElement | null)?.closest?.('input, textarea, select, [contenteditable="true"]');
+    const e = this.ent();
+    if (!typing && !ev.ctrlKey && !ev.metaKey && !ev.altKey && ev.key.toLowerCase() === 'n' && e?.can_add && e.permissions.create) {
+      ev.preventDefault();
+      this.router.navigate(['/qb', e.key, 'new']);
+    }
   }
 
   isNum(f: FieldMeta) { return f.type === 'money' || f.type === 'decimal'; }

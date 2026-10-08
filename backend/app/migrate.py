@@ -49,7 +49,7 @@ def after_create_all(engine: Engine) -> None:
         if "users" in tables:
             ucols = {c["name"] for c in insp.get_columns("users")}
             for col, ddl in (("totp_secret", "VARCHAR(300)"), ("totp_enabled", "BOOLEAN DEFAULT FALSE"),
-                             ("recovery_codes", "JSON")):
+                             ("recovery_codes", "JSON"), ("prefs", "JSON")):
                 if col not in ucols:
                     conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} {ddl}"))
         if engine.dialect.name == "postgresql":

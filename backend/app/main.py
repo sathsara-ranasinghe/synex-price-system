@@ -13,7 +13,7 @@ from .database import Base, SessionLocal, engine
 from .models import Role, User
 from .permissions import ROLE_PERMISSIONS
 from .qbwc import soap
-from .routers import auth, changes, companies, files, imports, portal, system
+from .routers import auth, changes, companies, files, imports, insights, portal, system
 from .security import hash_password
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -53,10 +53,43 @@ def init_db() -> None:
         db.commit()
 
 
+def _send_digests() -> int:
+    with SessionLocal() as db:
+        return insights.send_daily_digests(db)
+
+
+async def daily_summary_loop() -> None:
+    """Send the daily summary e-mail once a day after DIGEST_HOUR (server local time)."""
+    import asyncio
+    from datetime import datetime
+
+    while True:
+        await asyncio.sleep(600)
+        s = get_settings()
+        try:
+            from zoneinfo import ZoneInfo
+
+            now = datetime.now(ZoneInfo(s.digest_tz))
+        except Exception:  # no time-zone data on this machine: use its local clock
+            now = datetime.now()
+        if s.digest_hour < 0 or not s.smtp_host or now.hour < s.digest_hour:
+            continue
+        try:
+            n = await asyncio.to_thread(_send_digests)
+            if n:
+                log.info("Sent %d daily summary e-mails", n)
+        except Exception:  # never let the loop die
+            log.exception("Daily summary failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import asyncio
+
     init_db()
+    task = asyncio.create_task(daily_summary_loop())
     yield
+    task.cancel()
 
 
 settings = get_settings()
@@ -66,7 +99,8 @@ app.add_middleware(CORSMiddleware, allow_origins=[o.strip() for o in settings.co
                    allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
                    expose_headers=["Content-Disposition"])
 
-for r in (auth.router, companies.router, files.router, imports.router, portal.roles_router, portal.router, changes.router, system.router,
+for r in (auth.router, companies.router, files.router, imports.router, insights.router, portal.roles_router, portal.router,
+          changes.router, system.router,
           soap.router):
     app.include_router(r)
 

@@ -63,6 +63,7 @@ class User(Base):
     totp_secret: Mapped[str | None] = mapped_column(String(300))
     totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     recovery_codes: Mapped[list | None] = mapped_column(JSON)  # bcrypt hashes of unused one-time codes
+    prefs: Mapped[dict | None] = mapped_column(JSON)  # list columns, saved views, daily summary on/off
 
     role: Mapped[Role] = relationship(lazy="joined")
     companies: Mapped[list[Company]] = relationship(secondary=user_companies, lazy="selectin")
