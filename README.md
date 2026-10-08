@@ -68,8 +68,18 @@ node node_modules/@angular/cli/bin/ng.js build
 
 QuickBooks / Web Connector setup: [docs/QUICKBOOKS_DESKTOP_SETUP.md](docs/QUICKBOOKS_DESKTOP_SETUP.md).
 
-Tests (`cd backend && python -m pytest`) simulate Web Connector sessions and use a throw-away SQLite database
-(see `tests/conftest.py`). **Never point tests or `scripts/seed_test_data.py` at a live company file.**
+### Tests
+
+```bash
+cd backend && python -m pytest --cov=app        # 356 tests, ~91% coverage
+cd frontend && npm run build && npm run e2e      # browser smoke test of every page, list and form
+```
+
+* Backend tests simulate Web Connector sessions and use a throw-away SQLite database (`tests/conftest.py`). They check
+  the qbXML of every entity (Add/Mod/Query/Delete/Void, element order), every report, permissions per module,
+  companies, exports and PDFs for every entity, and error paths (QuickBooks errors, dropped connections, e-mail).
+* The E2E test starts its own backend on port 8200 with sample data and opens every page in headless Edge/Chrome.
+* **Never point tests or `scripts/seed_test_data.py` at a live company file.**
 
 ## Project layout
 

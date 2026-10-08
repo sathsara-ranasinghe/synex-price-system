@@ -80,7 +80,8 @@ ACCOUNT_TYPES = ("AccountsPayable", "AccountsReceivable", "Bank", "CostOfGoodsSo
                  "Expense", "FixedAsset", "Income", "LongTermLiability", "NonPosting", "OtherAsset",
                  "OtherCurrentAsset", "OtherCurrentLiability", "OtherExpense", "OtherIncome")
 
-SALES_LINE = (F("ItemRef", "Item", "ref", ref="item", required=True), F("Desc", "Description", "text", max=4095),
+# ItemRef is optional: QuickBooks allows description-only lines on sales forms and POs
+SALES_LINE = (F("ItemRef", "Item", "ref", ref="item"), F("Desc", "Description", "text", max=4095),
               F("Quantity", "Qty", "decimal", min=0), F("Rate", "Rate", "money"), F("ClassRef", "Class", "ref", ref="class"))
 
 
@@ -263,7 +264,7 @@ ENTITIES: list[Entity] = [
         F("Memo", "Memo", "text", max=4095),
         F("ExchangeRate", "Exchange rate (foreign currency only)", "decimal", min=0),
     ), lines=(LineType("item", "Item", "PurchaseOrderLineAdd", "PurchaseOrderLineMod", "PurchaseOrderLineRet", (
-        F("ItemRef", "Item", "ref", ref="item", required=True), F("Desc", "Description", "text", max=4095),
+        F("ItemRef", "Item", "ref", ref="item"), F("Desc", "Description", "text", max=4095),
         F("Quantity", "Qty", "decimal", min=0), F("Rate", "Rate", "money"), F("ClassRef", "Class", "ref", ref="class"),
         F("CustomerRef", "Customer:Job", "ref", ref="customer")), "Quantity*Rate"),),
         del_type="PurchaseOrder", name_path="RefNumber", party_path="VendorRef",
