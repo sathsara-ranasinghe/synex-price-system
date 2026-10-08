@@ -2,7 +2,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from sqlalchemy import text
@@ -137,6 +137,8 @@ if settings.static_dir and os.path.isdir(settings.static_dir):
 
     @app.get("/{path:path}", include_in_schema=False)
     def spa(path: str):
+        if path.startswith(("api/", "qbwc/")):  # unknown API address: a real 404, not the web page
+            raise HTTPException(404, "Not found")
         file = os.path.realpath(os.path.join(_static_root, path))
         if path and file.startswith(_static_root) and os.path.isfile(file):
             return FileResponse(file)
