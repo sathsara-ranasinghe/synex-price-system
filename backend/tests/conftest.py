@@ -11,6 +11,7 @@ os.environ["QBWC_RUN_EVERY_MINUTES"] = "1"
 os.environ["QBWC_USERNAME"] = "qbwc"
 os.environ["JWT_SECRET"] = "test-secret"
 os.environ["ATTACHMENTS_DIR"] = "./test_attachments"
+os.environ["COMPANY_BACKUPS_DIR"] = "./test_company_backups"
 os.environ["REQUIRE_2FA"] = "off"  # test_zzzzz_security turns it on where needed
 
 if os.path.exists("test.db"):

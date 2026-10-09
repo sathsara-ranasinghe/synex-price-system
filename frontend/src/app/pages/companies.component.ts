@@ -8,7 +8,7 @@ import { MatInputModule } from '@angular/material/input';
 import { MatMenuModule } from '@angular/material/menu';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { ApiService } from '../core/api.service';
-import { errorText } from '../core/auth';
+import { AuthService, errorText } from '../core/auth';
 import { Company, CompanyService } from '../core/company.service';
 
 @Component({
@@ -59,6 +59,30 @@ import { Company, CompanyService } from '../core/company.service';
       </section>
     }
 
+    @if (removal(); as r) {
+      <section class="panel remove" role="alertdialog" aria-labelledby="rm-title">
+        <h2 id="rm-title"><mat-icon>delete_forever</mat-icon> Remove {{ r.name }}?</h2>
+        <p>This deletes everything the portal holds for <strong>{{ r.name }}</strong>. <strong>QuickBooks and the company file are not touched.</strong>
+          A backup zip is saved on the server first, and the removal stays in the audit log.</p>
+        <ul class="counts">
+          <li><strong>{{ r.counts['qb_records'] | number }}</strong> QuickBooks records (copies)</li>
+          <li><strong>{{ r.counts['qb_writes'] | number }}</strong> changes and approvals</li>
+          <li><strong>{{ r.counts['qb_reports'] | number }}</strong> saved reports</li>
+          <li><strong>{{ r.counts['sync_logs'] | number }}</strong> sync history entries</li>
+          <li><strong>{{ r.counts['attachments'] | number }}</strong> attached files</li>
+          <li><strong>{{ r.users_with_access }}</strong> users lose access to this company</li>
+        </ul>
+        <p class="muted small">Remove its application from Web Connector on the QuickBooks computer as well, otherwise it keeps trying to sync.</p>
+        <mat-form-field class="confirm"><mat-label>Type {{ r.name }} to confirm</mat-label>
+          <input matInput [(ngModel)]="confirmName" autocomplete="off" /></mat-form-field>
+        <div class="actions">
+          <button mat-button (click)="removal.set(null)">Cancel</button>
+          <button mat-flat-button color="warn" [disabled]="confirmName.trim() !== r.name || removing()" (click)="remove(r)">
+            <mat-icon>delete_forever</mat-icon> Remove permanently</button>
+        </div>
+      </section>
+    }
+
     <div class="cards">
       @for (c of rows(); track c.company_id) {
         <section class="panel card" [class.off]="!c.is_active">
@@ -73,6 +97,9 @@ import { Company, CompanyService } from '../core/company.service';
               @if (c.company_file) { <button mat-menu-item (click)="resetFile(c)"><mat-icon>link_off</mat-icon>Unbind company file</button> }
               <button mat-menu-item (click)="toggle(c)"><mat-icon>{{ c.is_active ? 'block' : 'check_circle' }}</mat-icon>
                 {{ c.is_active ? 'Disable' : 'Enable' }}</button>
+              @if (!c.is_active && isAdmin()) {
+                <button mat-menu-item class="danger" (click)="askRemove(c)"><mat-icon>delete_forever</mat-icon>Remove company and its data…</button>
+              }
             </mat-menu>
           </div>
           <dl>
@@ -117,6 +144,11 @@ import { Company, CompanyService } from '../core/company.service';
     .detect { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 4px 0 10px; }
     .warn-box { display: flex; gap: 10px; align-items: flex-start; padding: 10px 14px; margin-bottom: 10px; border-radius: 10px;
       background: var(--warn-soft); color: var(--warn); font-size: 13px; }
+    .remove { border-color: var(--danger); margin-bottom: 16px; }
+    .remove h2 { display: flex; align-items: center; gap: 8px; color: var(--danger); }
+    .counts { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 4px 16px; padding-left: 18px; }
+    .confirm { width: 100%; max-width: 360px; }
+    .danger, .danger mat-icon { color: var(--danger) !important; }
     .steps { margin-top: 14px; padding: 12px 14px; border-radius: 10px; background: var(--primary-soft); font-size: 13px; }
     .steps ol { margin: 6px 0; padding-left: 18px; } .steps a { cursor: pointer; text-decoration: underline; }
   `],
@@ -129,6 +161,33 @@ export class CompaniesComponent implements OnInit {
   form = signal<{ company_id?: number; name: string; qbwc_username: string; password: string; app_name?: string;
     qbwc_url?: string; orig_app_name?: string; orig_qbwc_url?: string } | null>(null);
   suggestion = signal<{ url: string; note: string } | null>(null);
+  private auth = inject(AuthService);
+  isAdmin = () => this.auth.me()?.role === 'admin';
+  removal = signal<{ company_id: number; name: string; counts: Record<string, number>; users_with_access: number } | null>(null);
+  removing = signal(false);
+  confirmName = '';
+
+  askRemove(c: Company) {
+    this.confirmName = '';
+    this.svc.removalPreview(c.company_id).subscribe({
+      next: (r) => { this.removal.set(r); window.scrollTo({ top: 0, behavior: 'smooth' }); },
+      error: (e) => this.snack.open(errorText(e), 'OK'),
+    });
+  }
+
+  remove(r: { company_id: number; name: string }) {
+    this.removing.set(true);
+    this.svc.remove(r.company_id, this.confirmName.trim()).subscribe({
+      next: (res) => {
+        this.removing.set(false);
+        this.removal.set(null);
+        this.snack.open(`${res.message}. Backup: ${res.backup}`, 'OK', { duration: 8000 });
+        this.load();
+        this.svc.load();
+      },
+      error: (e) => { this.removing.set(false); this.snack.open(errorText(e), 'OK'); },
+    });
+  }
 
   ngOnInit() { this.load(); }
   load() { this.svc.all().subscribe((r) => this.rows.set(r)); }

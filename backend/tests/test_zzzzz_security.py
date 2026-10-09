@@ -99,3 +99,9 @@ def test_attachment_allow_list():
     ok = client.post(f"/api/files/attachments/customer/{rec.record_id}", headers=ADMIN,
                      files={"file": ("quote.pdf", b"%PDF-1.4 test", "application/pdf")})
     assert ok.status_code == 201, ok.text
+
+
+def test_static_files_get_real_content_types(tmp_path, monkeypatch):
+    import mimetypes
+    assert mimetypes.guess_type("x.woff2")[0] == "font/woff2"
+    assert mimetypes.guess_type("x.js")[0] == "text/javascript"

@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:4200"
     static_dir: str = ""
     attachments_dir: str = "./data/attachments"
+    company_backups_dir: str = "./data/company-backups"  # zip written before a company is removed
     max_attachment_mb: int = 20  # built Angular app to serve (Windows deployment without Nginx)
 
     smtp_host: str = ""

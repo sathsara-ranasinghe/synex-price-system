@@ -154,3 +154,112 @@ def download_qwc(company_id: int, poll_minutes: int = Query(1, ge=1, le=1440), d
     fname = re.sub(r"[^A-Za-z0-9]+", "_", c.name).strip("_") or "company"
     return Response(build_qwc(c, poll_minutes), media_type="application/xml",
                     headers={"Content-Disposition": f"attachment; filename=Synex_{fname}.qwc"})
+
+
+# ---------------------------------------------------------------- remove a company and all of its portal data
+
+def _company_tables():
+    """Every table that holds one company's data, children first (deleted in this order)."""
+    from ..models import Attachment, QBReport, QBWrite, SyncCheckpoint, SyncRequest
+
+    return [("attachments", Attachment), ("qb_writes", QBWrite), ("qb_reports", QBReport), ("sync_requests", SyncRequest),
+            ("sync_checkpoints", SyncCheckpoint), ("sync_logs", SyncLog), ("qb_records", QBRecord)]
+
+
+def _removable(db: Session, company_id: int) -> Company:
+    c = db.get(Company, company_id)
+    if not c:
+        raise HTTPException(404, "Company not found")
+    if c.is_active:
+        raise HTTPException(409, "Disable the company first, then remove it")
+    if db.query(Company).count() <= 1:
+        raise HTTPException(409, "This is the only company and cannot be removed")
+    return c
+
+
+def _admin(user: User) -> None:
+    if user.role.role_name != "admin":
+        raise HTTPException(403, "Only an admin can remove a company")
+
+
+@router.get("/{company_id}/removal")
+def removal_preview(company_id: int, db: Session = Depends(get_db), user: User = Depends(require(USERS_MANAGE))):
+    """What removing the company would delete."""
+    _admin(user)
+    c = _removable(db, company_id)
+    counts = {name: db.query(model).filter(model.company_id == c.company_id).count() for name, model in _company_tables()}
+    users = db.query(User).filter(User.companies.any(Company.company_id == c.company_id)).count()
+    return {"company_id": c.company_id, "name": c.name, "counts": counts, "users_with_access": users}
+
+
+class RemoveIn(BaseModel):
+    confirm_name: str
+
+
+def _backup(db: Session, c: Company) -> str:
+    """A zip with every row of the company (JSON) and its attachment files, kept on the server."""
+    import io
+    import json
+    import os
+    import zipfile
+
+    from sqlalchemy import inspect as sa_inspect
+
+    from ..config import get_settings
+
+    s = get_settings()
+    folder = os.path.abspath(s.company_backups_dir)
+    os.makedirs(folder, exist_ok=True)
+    safe = re.sub(r"[^A-Za-z0-9]+", "_", c.name).strip("_") or "company"
+    path = os.path.join(folder, f"company_{c.company_id}_{safe}_{datetime.now():%Y%m%d_%H%M%S}.zip")
+
+    def rows(model):
+        cols = [a.key for a in sa_inspect(model).mapper.column_attrs]
+        for r in db.query(model).filter(model.company_id == c.company_id).yield_per(2000):
+            yield {k: getattr(r, k) for k in cols}
+
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("company.json", json.dumps({k: getattr(c, k) for k in
+                                               [a.key for a in sa_inspect(Company).mapper.column_attrs]}, default=str, indent=1))
+        for name, model in _company_tables():
+            buf = io.StringIO()
+            for r in rows(model):
+                buf.write(json.dumps(r, default=str) + "\n")
+            z.writestr(f"{name}.jsonl", buf.getvalue())
+        att_dir = os.path.join(s.attachments_dir, str(c.company_id))
+        if os.path.isdir(att_dir):
+            for root, _, files in os.walk(att_dir):
+                for f in files:
+                    full = os.path.join(root, f)
+                    z.write(full, os.path.join("attachments", os.path.relpath(full, att_dir)))
+    return path
+
+
+@router.delete("/{company_id}")
+def remove_company(company_id: int, body: RemoveIn, db: Session = Depends(get_db), user: User = Depends(require(USERS_MANAGE))):
+    """Delete the company and all of its data in the portal. QuickBooks itself is not touched.
+
+    A backup zip is written first; the audit log keeps a record of the removal."""
+    import os
+    import shutil
+
+    from ..config import get_settings
+
+    _admin(user)
+    c = _removable(db, company_id)
+    if body.confirm_name.strip() != c.name:
+        raise HTTPException(422, "Type the company name exactly to confirm")
+    backup = _backup(db, c)
+    counts = {}
+    for name, model in _company_tables():
+        counts[name] = db.query(model).filter(model.company_id == c.company_id).delete(synchronize_session=False)
+    for u in db.query(User).filter(User.companies.any(Company.company_id == c.company_id)).all():
+        u.companies = [x for x in u.companies if x.company_id != c.company_id]
+    name, cid = c.name, c.company_id
+    db.delete(c)
+    audit.log(db, user.user_id, "company", cid, "remove", {"name": name}, {"deleted": counts, "backup": os.path.basename(backup)})
+    db.commit()
+    att_dir = os.path.join(get_settings().attachments_dir, str(cid))
+    if os.path.isdir(att_dir):
+        shutil.rmtree(att_dir, ignore_errors=True)
+    return {"message": f"{name} and its portal data were removed", "deleted": counts, "backup": os.path.basename(backup)}

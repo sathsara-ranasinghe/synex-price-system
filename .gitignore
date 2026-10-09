@@ -11,3 +11,4 @@ backend/data/
 **/test_attachments/
 *.dump
 *.log
+**/test_company_backups/

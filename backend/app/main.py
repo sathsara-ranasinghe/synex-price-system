@@ -1,4 +1,5 @@
 import logging
+import mimetypes
 import os
 from contextlib import asynccontextmanager
 
@@ -130,6 +131,11 @@ for r in (auth.router, companies.router, files.router, imports.router, insights.
 def health():
     return {"status": "ok"}
 
+
+# Windows does not know these types and would send text/plain, which browsers refuse because of nosniff.
+for _ext, _type in ((".woff2", "font/woff2"), (".woff", "font/woff"), (".webmanifest", "application/manifest+json"),
+                    (".js", "text/javascript"), (".mjs", "text/javascript"), (".css", "text/css"), (".svg", "image/svg+xml")):
+    mimetypes.add_type(_type, _ext)
 
 # Windows/no-Docker deployments: serve the built Angular app from this process (STATIC_DIR=...\browser).
 if settings.static_dir and os.path.isdir(settings.static_dir):

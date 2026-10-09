@@ -52,4 +52,13 @@ export class CompanyService {
   create(body: { name: string; qbwc_username: string; qbwc_password: string }) { return this.http.post<Company>('/api/companies', body); }
   urlSuggestion() { return this.http.get<{ url: string; note: string }>('/api/companies/url-suggestion'); }
   update(id: number, body: Record<string, unknown>) { return this.http.patch<Company>(`/api/companies/${id}`, body); }
+  removalPreview(id: number) {
+    return this.http.get<{ company_id: number; name: string; counts: Record<string, number>; users_with_access: number }>(
+      `/api/companies/${id}/removal`);
+  }
+  /** Deletes the company and all of its portal data (QuickBooks is not touched). */
+  remove(id: number, confirm_name: string) {
+    return this.http.delete<{ message: string; deleted: Record<string, number>; backup: string }>(`/api/companies/${id}`,
+      { body: { confirm_name } });
+  }
 }
