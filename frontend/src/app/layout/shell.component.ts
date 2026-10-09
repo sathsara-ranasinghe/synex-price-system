@@ -104,7 +104,7 @@ const MODULE_ICONS: Record<string, string> = {
             <mat-icon [matBadge]="unread() || null" matBadgeColor="warn" matBadgeSize="small">notifications</mat-icon>
           </a>
         </header>
-        <main class="content"><router-outlet /></main>
+        <main class="content">@if (ready()) { <router-outlet /> }</main>
       </mat-sidenav-content>
     </mat-sidenav-container>
 
@@ -343,15 +343,22 @@ export class ShellComponent implements OnInit, OnDestroy {
     }
   }
 
+  ready = signal(false);
+
   ngOnInit() {
     this.insights.reset();
-    this.companies.load().then(() => this.portal.load());
     const poll = () => {
       this.api.unreadCount().subscribe((r) => this.unread.set(r.count));
       this.api.syncStatus().pipe(catchError(() => of(null))).subscribe((s) => this.sync.set(s));
     };
-    poll();
-    this.timer = setInterval(poll, 60_000);
+    // Pages and polls start only after the company is known, so no request goes out for a company
+    // that was disabled since the last visit (the API would answer 403).
+    this.companies.load().catch(() => undefined).finally(() => {
+      this.ready.set(true);
+      this.portal.load().catch(() => undefined);
+      poll();
+      this.timer = setInterval(poll, 60_000);
+    });
   }
 
   ngOnDestroy() { clearInterval(this.timer); }
